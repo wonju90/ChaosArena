@@ -45,7 +45,10 @@ spec:
             - name: EXPECTED_REPLICAS
               value: "3"
             - name: APP_VERSION
-              value: "v1"
+              # 멀티 클러스터 구성 시 클러스터마다 다르게 채워서, 지금 어느 클러스터가
+              # 응답하고 있는지 대시보드 화면(배포 버전 배지)에서 바로 구분되게 한다.
+              # 예: 클러스터 A(KR1)="kr1-active", 클러스터 B(KR2)="kr2-standby"
+              value: "{cluster-label}"
             - name: SLACK_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:

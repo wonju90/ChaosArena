@@ -1,0 +1,17 @@
+# 이 파일을 terraform.tfvars로 복사한 뒤 실제 값을 채우세요.
+# terraform.tfvars는 .gitignore에 등록되어 있어 커밋되지 않습니다.
+
+nhncloud_user_name = "you@example.com"
+nhncloud_tenant_id = "REPLACE_WITH_TENANT_ID"
+nhncloud_password  = "REPLACE_WITH_API_PASSWORD"
+
+ssh_public_key = "ssh-rsa AAAA... your-public-key"
+admin_cidr     = "203.0.113.4/32" # 본인 접속 IP/32
+
+kr1_internet_gateway_id = "REPLACE_ME"
+kr1_image_name          = "Ubuntu Server 22.04.xxx LTS"
+kr1_flavor_name         = "u2.c2m4"
+
+kr2_internet_gateway_id = "REPLACE_ME"
+kr2_image_name          = "Ubuntu Server 22.04.xxx LTS"
+kr2_flavor_name         = "u2.c2m4"

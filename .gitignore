@@ -10,3 +10,12 @@ env/
 
 # 실제 값이 들어가는 시크릿 - k8s/secret-slack.example.yaml을 복사해서 만들 것
 k8s/secret-slack.yaml
+
+# Terraform 상태/변수 파일 - terraform.tfvars.example을 복사해서 만들 것
+terraform/.terraform/
+terraform/terraform.tfvars
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/crash.log
+terraform/override.tf
+terraform/override.tf.json

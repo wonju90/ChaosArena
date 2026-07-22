@@ -1,0 +1,595 @@
+{% extends "base.html" %}
+{% block title %}게임 - K8s 장애 대응 게임 대시보드{% endblock %}
+
+{% block extra_style %}
+  /* 화면 흔들림(screen shake) 효과: 파드 장애를 일으켰을 때 body 전체에 잠깐 적용 */
+  body.shake { animation: shake-anim 0.4s; }
+  @keyframes shake-anim {
+    10%, 90% { transform: translateX(-2px); }
+    20%, 80% { transform: translateX(4px); }
+    30%, 50%, 70% { transform: translateX(-8px); }
+    40%, 60% { transform: translateX(8px); }
+  }
+
+  /* 클러스터 상태 헤더 */
+  #cluster-status {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 20px;
+    font-weight: bold;
+  }
+  .icon-btn {
+    background: #334155;
+    border: none;
+    color: #f1f5f9;
+    font-size: 16px;
+    border-radius: 999px;
+    width: 32px;
+    height: 32px;
+    cursor: pointer;
+  }
+  .icon-btn:hover { background: #475569; }
+
+  /* 파드 격자 */
+  #pod-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .pod-box {
+    width: 84px;
+    height: 60px;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    text-align: center;
+    padding: 4px;
+    word-break: break-all;
+    transition: background 0.3s, border-color 0.3s;
+  }
+  .pod-ready { background: #14532d; border: 1px solid #22c55e; }
+  .pod-not-ready { background: #7f1d1d; border: 1px solid #ef4444; }
+  .pod-node { font-size: 9px; color: #cbd5e1; margin-bottom: 2px; }
+
+  /* 미션 + 타이머 */
+  #mission-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 16px;
+  }
+  #mission-timer { font-size: 22px; font-weight: bold; }
+  .mission-flavor { margin-top: 8px; font-size: 13px; color: #94a3b8; min-height: 18px; }
+
+  /* 랭크 구간 게이지: 복구 시간이 어느 랭크 구간에 있는지 시각적으로 보여줌 */
+  .rank-zone-bar {
+    position: relative;
+    display: flex;
+    height: 14px;
+    border-radius: 999px;
+    overflow: hidden;
+    margin-top: 14px;
+  }
+  .rank-zone-segment { height: 100%; }
+  .rank-zone-segment.zone-S { background: linear-gradient(90deg, #facc15, #eab308); }
+  .rank-zone-segment.zone-A { background: linear-gradient(90deg, #a78bfa, #8b5cf6); }
+  .rank-zone-segment.zone-B { background: linear-gradient(90deg, #60a5fa, #3b82f6); }
+  .rank-zone-segment.zone-C { background: linear-gradient(90deg, #94a3b8, #64748b); }
+  .rank-zone-marker {
+    position: absolute;
+    top: -3px;
+    width: 4px;
+    height: 20px;
+    border-radius: 999px;
+    background: #f8fafc;
+    box-shadow: 0 0 8px rgba(248, 250, 252, 0.9);
+    transition: left 0.4s linear;
+    left: 0%;
+  }
+  .rank-zone-labels { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; color: #64748b; }
+
+  /* 난이도 선택 */
+  #difficulty-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  #difficulty-row button {
+    flex: 1;
+    min-width: 120px;
+    padding: 14px 10px;
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background: #0f172a;
+    color: #f1f5f9;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  #difficulty-row button:hover { filter: brightness(1.3); }
+  #difficulty-row small { display: block; font-size: 11px; color: #94a3b8; margin-top: 4px; }
+  #btn-easy { border-color: #22c55e; }
+  #btn-hard { border-color: #f97316; }
+  #btn-boss { border-color: #ef4444; }
+
+  /* Chaos 수동 토글 버튼 */
+  #button-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  #button-row button {
+    flex: 1;
+    min-width: 120px;
+    padding: 12px;
+    font-size: 14px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    background: #334155;
+    color: #f1f5f9;
+    transition: background 0.15s;
+  }
+  #button-row button:hover { background: #475569; }
+  #btn-cpu { background: #7c2d12; }
+  #btn-error { background: #7f1d1d; }
+  #btn-recover { background: #14532d; }
+
+  /* 화면 전체 빨간 플래시 (파드 장애 발생 순간) */
+  .flash-overlay {
+    position: fixed;
+    inset: 0;
+    background: #ef4444;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 40;
+    transition: opacity 0.3s ease-out;
+  }
+  .flash-overlay.active { opacity: 0.35; transition: opacity 0s; }
+
+  /* 컨페티가 그려질 캔버스 */
+  .confetti-canvas {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 60;
+  }
+
+  /* 랭크 발표 오버레이 */
+  .rank-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  .rank-overlay.show { opacity: 1; pointer-events: auto; cursor: pointer; }
+  .rank-card { text-align: center; animation: rank-pop 0.4s ease-out; }
+  @keyframes rank-pop {
+    0% { transform: scale(0.3); opacity: 0; }
+    60% { transform: scale(1.15); opacity: 1; }
+    100% { transform: scale(1); }
+  }
+  .rank-letter { font-size: 140px; font-weight: 900; line-height: 1; text-shadow: 0 0 40px currentColor; }
+  .rank-S { color: #facc15; }
+  .rank-A { color: #a78bfa; }
+  .rank-B { color: #60a5fa; }
+  .rank-C { color: #94a3b8; }
+  .rank-caption { font-size: 22px; font-weight: bold; margin-top: 8px; }
+  .rank-elapsed { font-size: 18px; color: #cbd5e1; margin-top: 4px; }
+  .rank-combo { font-size: 16px; color: #fb923c; margin-top: 10px; min-height: 20px; }
+  .rank-hint { font-size: 12px; color: #64748b; margin-top: 16px; }
+
+  /* 이벤트 토스트 */
+  .event-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: #1e293b;
+    border: 1px solid #475569;
+    color: #f1f5f9;
+    padding: 10px 20px;
+    border-radius: 999px;
+    font-size: 14px;
+    opacity: 0;
+    transition: opacity 0.25s, transform 0.25s;
+    pointer-events: none;
+    z-index: 70;
+    max-width: 90vw;
+    text-align: center;
+  }
+  .event-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+{% endblock %}
+
+{% block content %}
+
+<div id="flash-overlay" class="flash-overlay"></div>
+<canvas id="confetti-canvas" class="confetti-canvas"></canvas>
+<div id="event-toast" class="event-toast"></div>
+
+<div id="rank-overlay" class="rank-overlay" onclick="hideRankOverlay()">
+  <div class="rank-card">
+    <div id="rank-letter" class="rank-letter">S</div>
+    <div id="rank-caption" class="rank-caption">MISSION CLEAR!</div>
+    <div id="rank-elapsed" class="rank-elapsed">--</div>
+    <div id="rank-combo" class="rank-combo"></div>
+    <div class="rank-hint">화면을 클릭하면 닫혀요</div>
+  </div>
+</div>
+
+  <!-- 클러스터 상태 -->
+  <div class="panel">
+    <div id="cluster-status">
+      <span id="cluster-status-text">⚪ 상태 확인 중...</span>
+      <button id="mute-toggle" class="icon-btn" onclick="toggleMute()" title="효과음 켜기/끄기">🔊</button>
+    </div>
+  </div>
+
+  <!-- 파드 격자 -->
+  <div class="panel">
+    <h2>🧩 파드 격자 (노드별 그룹)</h2>
+    <div id="pod-grid">로딩 중...</div>
+  </div>
+
+  <!-- 미션 + 타이머 -->
+  <div class="panel">
+    <div id="mission-row">
+      <span id="mission-text">🎯 미션: 대기 중</span>
+      <span>⏱ 이번 복구 시간: <span id="mission-timer">--:--</span></span>
+    </div>
+    <div id="mission-flavor" class="mission-flavor"></div>
+    <div class="rank-zone-bar" id="rank-zone-bar">
+      <div class="rank-zone-marker" id="rank-zone-marker"></div>
+    </div>
+    <div class="rank-zone-labels" id="rank-zone-labels"></div>
+  </div>
+
+  <!-- 난이도 선택 -->
+  <div class="panel">
+    <h2>🎮 난이도 선택</h2>
+    <div id="difficulty-row">
+      <button id="btn-easy" onclick="startChaos('/chaos/random-pod-kill', '이지')">
+        🟢 이지<small>파드 1개</small>
+      </button>
+      <button id="btn-hard" onclick="startChaos('/chaos/hard-mode', '하드')">
+        🟠 하드<small>파드 2개 동시</small>
+      </button>
+      <button id="btn-boss" onclick="startChaos('/chaos/boss-mode', '보스전')">
+        🔴 보스전<small>파드2 + CPU + 에러</small>
+      </button>
+    </div>
+  </div>
+
+  <!-- Chaos 수동 토글 -->
+  <div class="panel">
+    <h2>⚡ Chaos 컨트롤</h2>
+    <div id="button-row">
+      <button id="btn-cpu" onclick="toggleCpu()">🔥 CPU 부하</button>
+      <button id="btn-error" onclick="toggleError()">💥 에러 발생</button>
+      <button id="btn-recover" onclick="recoverAll()">✅ 복구</button>
+    </div>
+  </div>
+
+{% endblock %}
+
+{% block extra_script %}
+<script>
+// ---------------------------------------------------------------------------
+// 이 화면은 새로고침 없이, 주기적으로 서버(API)에 물어봐서(polling) 화면을 갱신한다.
+// ---------------------------------------------------------------------------
+
+const RECOVERING_MESSAGES = [
+  '🔧 쿠버네티스가 복구 중...',
+  '⏳ 자가 치유(Self-healing) 진행 중...',
+  '🩹 새 파드를 만드는 중...',
+];
+const KILL_MESSAGES = [
+  '🚨 이런! 파드가 쓰러졌다!',
+  '💥 갑작스러운 장애 발생!',
+  '😱 파드가 다운됐습니다!',
+];
+const COMPLETE_MESSAGES = [
+  '완벽한 복구!',
+  '역시 Self-healing!',
+  '복구 성공! 다음 도전은?',
+];
+const RANK_COLORS = { S: '#facc15', A: '#a78bfa', B: '#60a5fa', C: '#94a3b8' };
+
+// 서버의 RANK_THRESHOLDS를 그대로 받아와서 게이지 구간을 만든다 (예: [[5,"S"],[10,"A"],[20,"B"]])
+const RANK_THRESHOLDS = {{ rank_thresholds | tojson }};
+const RANK_ZONE_MAX_SECONDS = RANK_THRESHOLDS[RANK_THRESHOLDS.length - 1][0] * 1.5;
+
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// 랭크 구간 게이지 초기 렌더링 (S/A/B/C 구간을 폭 비율로 나눠 그린다)
+function buildRankZoneBar() {
+  const bar = document.getElementById('rank-zone-bar');
+  const labelsEl = document.getElementById('rank-zone-labels');
+  const marker = document.getElementById('rank-zone-marker');
+  let prevLimit = 0;
+  const segments = [];
+  const labels = [];
+  RANK_THRESHOLDS.forEach(([limit, label]) => {
+    const widthPct = ((limit - prevLimit) / RANK_ZONE_MAX_SECONDS) * 100;
+    segments.push(`<div class="rank-zone-segment zone-${label}" style="width:${widthPct}%;"></div>`);
+    labels.push(`<span>${label} ≤${limit}s</span>`);
+    prevLimit = limit;
+  });
+  const cWidthPct = ((RANK_ZONE_MAX_SECONDS - prevLimit) / RANK_ZONE_MAX_SECONDS) * 100;
+  segments.push(`<div class="rank-zone-segment zone-C" style="width:${cWidthPct}%;"></div>`);
+  labels.push('<span>C</span>');
+
+  bar.innerHTML = segments.join('') + marker.outerHTML;
+  labelsEl.innerHTML = labels.join('');
+}
+
+function updateRankZoneMarker(elapsedSeconds) {
+  const marker = document.getElementById('rank-zone-marker');
+  const pct = Math.min((elapsedSeconds / RANK_ZONE_MAX_SECONDS) * 100, 100);
+  marker.style.left = pct + '%';
+}
+
+// 이벤트 토스트
+let toastTimer = null;
+function showToast(text) {
+  const el = document.getElementById('event-toast');
+  el.innerText = text;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// 화면 흔들림 + 빨간 플래시
+function triggerShake() {
+  document.body.classList.add('shake');
+  document.getElementById('flash-overlay').classList.add('active');
+  setTimeout(() => {
+    document.body.classList.remove('shake');
+    document.getElementById('flash-overlay').classList.remove('active');
+  }, 400);
+}
+
+// 사운드 효과 (Web Audio API)
+let audioCtx = null;
+function getAudioContext() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  return audioCtx;
+}
+
+function isMuted() {
+  return localStorage.getItem('chaosDashboardMuted') === 'true';
+}
+
+function playTone(freq, durationMs, type, delayMs) {
+  if (isMuted()) return;
+  const ctx = getAudioContext();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type || 'sine';
+  osc.frequency.value = freq;
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  const startAt = ctx.currentTime + (delayMs || 0) / 1000;
+  gain.gain.setValueAtTime(0.15, startAt);
+  gain.gain.exponentialRampToValueAtTime(0.001, startAt + durationMs / 1000);
+  osc.start(startAt);
+  osc.stop(startAt + durationMs / 1000);
+}
+
+function playKillSound() {
+  playTone(440, 150, 'sawtooth', 0);
+  playTone(220, 200, 'sawtooth', 120);
+}
+
+function playCompleteSound(rank) {
+  const baseFreqByRank = { S: 880, A: 660, B: 523, C: 392 };
+  const base = baseFreqByRank[rank] || 392;
+  playTone(base, 120, 'sine', 0);
+  playTone(base * 1.25, 120, 'sine', 110);
+  playTone(base * 1.5, 220, 'sine', 220);
+}
+
+function toggleMute() {
+  const nowMuted = !isMuted();
+  localStorage.setItem('chaosDashboardMuted', String(nowMuted));
+  document.getElementById('mute-toggle').innerText = nowMuted ? '🔇' : '🔊';
+}
+
+// 컨페티(confetti)
+function fireConfetti(colorHex) {
+  const canvas = document.getElementById('confetti-canvas');
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  const ctx = canvas.getContext('2d');
+  const colors = [colorHex, '#ffffff', '#fde68a'];
+  const particles = Array.from({ length: 80 }, () => ({
+    x: Math.random() * canvas.width,
+    y: -20 - Math.random() * canvas.height * 0.3,
+    size: 4 + Math.random() * 6,
+    speedY: 2 + Math.random() * 4,
+    speedX: -2 + Math.random() * 4,
+    rotation: Math.random() * 360,
+    rotSpeed: -10 + Math.random() * 20,
+    color: colors[Math.floor(Math.random() * colors.length)],
+  }));
+
+  const startTime = performance.now();
+  function frame(now) {
+    const elapsed = now - startTime;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    particles.forEach((p) => {
+      p.x += p.speedX;
+      p.y += p.speedY;
+      p.rotation += p.rotSpeed;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate((p.rotation * Math.PI) / 180);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+      ctx.restore();
+    });
+    if (elapsed < 2200) {
+      requestAnimationFrame(frame);
+    } else {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+// 랭크 발표 오버레이
+let rankOverlayTimer = null;
+function showRankOverlay(rank, elapsedSeconds, combo) {
+  const overlay = document.getElementById('rank-overlay');
+  const letterEl = document.getElementById('rank-letter');
+  const elapsedEl = document.getElementById('rank-elapsed');
+  const comboEl = document.getElementById('rank-combo');
+
+  letterEl.innerText = rank;
+  letterEl.className = 'rank-letter rank-' + rank;
+  elapsedEl.innerText = elapsedSeconds.toFixed(1) + '초';
+  comboEl.innerText = combo >= 2 ? `🔥 ${combo}연속 S랭크!` : '';
+
+  overlay.classList.add('show');
+  fireConfetti(RANK_COLORS[rank] || '#94a3b8');
+  playCompleteSound(rank);
+
+  clearTimeout(rankOverlayTimer);
+  rankOverlayTimer = setTimeout(hideRankOverlay, 2600);
+}
+
+function hideRankOverlay() {
+  document.getElementById('rank-overlay').classList.remove('show');
+}
+
+// 파드 격자 칸에 표시할 이름을 줄여준다.
+function shortPodLabel(name) {
+  const parts = name.split('-');
+  return parts.slice(-2).join('-');
+}
+
+// 파드 격자: 2초마다 갱신, 노드별로 묶어서 표시
+async function refreshPods() {
+  const gridEl = document.getElementById('pod-grid');
+  try {
+    const res = await fetch('/api/pods');
+    const data = await res.json();
+    if (data.error) {
+      gridEl.innerText = '⚠ ' + data.error;
+      updateClusterStatus(null);
+      return;
+    }
+
+    const byNode = {};
+    for (const pod of data.pods) {
+      if (!byNode[pod.node]) byNode[pod.node] = [];
+      byNode[pod.node].push(pod);
+    }
+
+    gridEl.innerHTML = '';
+    for (const node in byNode) {
+      for (const pod of byNode[node]) {
+        const box = document.createElement('div');
+        box.className = 'pod-box ' + (pod.ready ? 'pod-ready' : 'pod-not-ready');
+        box.innerHTML = `<div class="pod-node">${node}</div>` +
+                         `${pod.ready ? '🟩' : '🟥'} ${shortPodLabel(pod.name)}`;
+        gridEl.appendChild(box);
+      }
+    }
+
+    updateClusterStatus(data.pods);
+  } catch (e) {
+    gridEl.innerText = '⚠ 파드 정보를 불러오지 못했습니다.';
+  }
+}
+
+// 클러스터 상태 텍스트 갱신 (파드 준비 상태 기준)
+function updateClusterStatus(pods) {
+  const el = document.getElementById('cluster-status-text');
+  if (!pods) {
+    el.innerText = '⚪ 상태 확인 불가';
+    return;
+  }
+  const allReady = pods.length > 0 && pods.every(p => p.ready);
+  el.innerText = allReady ? '🟢 클러스터 상태: 정상' : '🔴 클러스터 상태: 복구 중';
+}
+
+// 미션 + 타이머: 0.5초마다 갱신
+async function refreshMission() {
+  const res = await fetch('/api/mission/status');
+  const data = await res.json();
+  const textEl = document.getElementById('mission-text');
+  const timerEl = document.getElementById('mission-timer');
+  const flavorEl = document.getElementById('mission-flavor');
+
+  if (data.status === 'idle') {
+    textEl.innerText = '🎯 미션: 대기 중';
+    timerEl.innerText = '--:--';
+    flavorEl.innerText = '';
+    updateRankZoneMarker(0);
+  } else if (data.status === 'recovering') {
+    textEl.innerText = '🎯 미션: 파드 복구 중...';
+    timerEl.innerText = data.elapsed.toFixed(1) + '초';
+    const flavorIndex = Math.floor(data.elapsed / 2) % RECOVERING_MESSAGES.length;
+    flavorEl.innerText = RECOVERING_MESSAGES[flavorIndex];
+    updateRankZoneMarker(data.elapsed);
+  } else if (data.status === 'completed') {
+    textEl.innerText = '🎯 미션: 복구 완료!';
+    timerEl.innerText = data.elapsed.toFixed(1) + '초';
+    flavorEl.innerText = pickRandom(COMPLETE_MESSAGES);
+    updateRankZoneMarker(data.elapsed);
+    showRankOverlay(data.rank, data.elapsed, data.combo);
+  }
+}
+
+// 난이도 선택 버튼 (이지 / 하드 / 보스전)
+async function startChaos(url, label) {
+  const res = await fetch(url, { method: 'POST' });
+  const data = await res.json();
+  if (data.error) {
+    showToast('⚠ ' + data.error);
+    return;
+  }
+  triggerShake();
+  playKillSound();
+  showToast(pickRandom(KILL_MESSAGES) + ` (${label} 모드)`);
+}
+
+// Chaos 수동 토글 버튼
+async function toggleCpu() {
+  const res = await fetch('/chaos/cpu', { method: 'POST' });
+  const data = await res.json();
+  showToast(data.cpu_load ? '🔥 CPU 부하 시작!' : '🔥 CPU 부하 종료');
+}
+
+async function toggleError() {
+  const res = await fetch('/chaos/error', { method: 'POST' });
+  const data = await res.json();
+  showToast(data.error_mode ? '💥 에러 주입 시작!' : '💥 에러 주입 종료');
+}
+
+async function recoverAll() {
+  await fetch('/chaos/recover', { method: 'POST' });
+  showToast('✅ 모든 Chaos 모드 정상 복귀');
+}
+
+// 초기 음소거 버튼 아이콘 세팅
+document.getElementById('mute-toggle').innerText = isMuted() ? '🔇' : '🔊';
+
+// 랭크 구간 게이지 최초 렌더링
+buildRankZoneBar();
+
+// 폴링 시작
+setInterval(refreshPods, 2000);
+setInterval(refreshMission, 500);
+
+// 처음 화면을 열었을 때도 바로 한 번 불러온다
+refreshPods();
+refreshMission();
+</script>
+{% endblock %}

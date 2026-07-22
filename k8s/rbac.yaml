@@ -1,0 +1,44 @@
+# -----------------------------------------------------------------------------
+# 이 앱(Flask)이 쿠버네티스 API를 호출해서 파드를 조회/삭제하려면 권한이 필요하다.
+# 아래 3개 리소스가 한 세트로 그 권한을 만들어준다.
+#
+# ServiceAccount : 앱이 "누구"로서 쿠버네티스에 접속할지를 정의하는 신분증 같은 것
+# Role           : "무엇을 할 수 있는지"(get/list/delete pods)를 정의한 권한 목록
+# RoleBinding    : 위 신분증(ServiceAccount)과 권한 목록(Role)을 서로 묶어주는 역할
+#
+# 적용 방법: kubectl apply -f k8s/rbac.yaml
+# 그리고 앱 Deployment의 spec.template.spec 에 아래 한 줄을 반드시 추가해야 한다.
+#   serviceAccountName: chaos-dashboard-sa
+# -----------------------------------------------------------------------------
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-dashboard-sa
+  namespace: default
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-manager
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]   # delete 권한이 핵심 (조회+삭제 둘 다 필요)
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chaos-dashboard-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: chaos-dashboard-sa
+    namespace: default
+roleRef:
+  kind: Role
+  name: pod-manager
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}대시보드 - K8s 장애 대응 게임 대시보드{% endblock %}
+
+{% block extra_style %}
+  .sparkline-wrap {
+    margin-top: 16px;
+    background: rgba(15, 23, 42, 0.6);
+    border-radius: 12px;
+    padding: 12px 16px;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+  }
+  .sparkline-wrap .sparkline-label {
+    font-size: 12px;
+    color: #94a3b8;
+    margin-bottom: 6px;
+  }
+  #response-sparkline, #error-sparkline { width: 100%; height: 64px; display: block; }
+
+  .gauge-row { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+  .gauge-ring {
+    position: relative;
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: conic-gradient(#f87171 calc(var(--pct, 0) * 1%), rgba(51, 65, 85, 0.6) 0);
+    transition: background 0.4s;
+  }
+  .gauge-ring::before {
+    content: '';
+    width: 74px;
+    height: 74px;
+    border-radius: 50%;
+    background: #17233a;
+    position: absolute;
+    top: 11px;
+    left: 11px;
+  }
+  .gauge-ring span {
+    position: relative;
+    font-size: 18px;
+    font-weight: 800;
+    color: #f87171;
+  }
+  .gauge-caption { font-size: 12px; color: #94a3b8; }
+
+  .chaos-badge-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chaos-badge-idle { background: rgba(20, 83, 45, 0.4); color: #4ade80; }
+  .chaos-badge-cpu { background: rgba(124, 45, 18, 0.6); color: #fdba74; }
+  .chaos-badge-error { background: rgba(127, 29, 29, 0.6); color: #fca5a5; }
+
+  #pod-summary-dots { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .pod-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    background: #334155;
+  }
+  .pod-dot-ready { background: #22c55e; }
+  .pod-dot-not-ready { background: #ef4444; }
+  #pod-summary-text { font-size: 14px; color: #cbd5e1; }
+
+  @media (max-width: 560px) {
+    .gauge-row { justify-content: center; text-align: center; }
+  }
+{% endblock %}
+
+{% block content %}
+  <div class="panel">
+    <h2>📊 실시간 지표</h2>
+    <div class="stat-grid">
+      <div class="stat-tile stat-accent-blue">
+        <div class="stat-icon">📨</div>
+        <div class="stat-value" id="metric-requests">-</div>
+        <div class="stat-label">요청 수</div>
+      </div>
+      <div class="stat-tile stat-accent-red">
+        <div class="stat-icon">⚠️</div>
+        <div class="stat-value"><span id="metric-error-rate">-</span>%</div>
+        <div class="stat-label">에러율</div>
+      </div>
+      <div class="stat-tile stat-accent-orange">
+        <div class="stat-icon">⏱️</div>
+        <div class="stat-value"><span id="metric-latency">-</span>ms</div>
+        <div class="stat-label">평균 응답시간</div>
+      </div>
+    </div>
+
+    <div class="sparkline-wrap">
+      <div class="sparkline-label">응답시간 추이 (최근 요청)</div>
+      <svg id="response-sparkline" viewBox="0 0 300 64" preserveAspectRatio="none"></svg>
+    </div>
+
+    <div class="sparkline-wrap">
+      <div class="sparkline-label">에러율 추이 (%, 최근 10건씩 이동평균)</div>
+      <svg id="error-sparkline" viewBox="0 0 300 64" preserveAspectRatio="none"></svg>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>🚦 Chaos 상태</h2>
+    <div class="gauge-row">
+      <div>
+        <div class="gauge-ring" id="error-gauge" style="--pct: 0;"><span id="error-gauge-text">0%</span></div>
+        <div class="gauge-caption" style="text-align:center; margin-top:6px;">에러율 게이지</div>
+      </div>
+      <div class="chaos-badge-row" id="chaos-badge-row">
+        <span class="pill-badge chaos-badge-idle">✅ 정상</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>🧩 파드 요약</h2>
+    <div id="pod-summary-text">로딩 중...</div>
+    <div id="pod-summary-dots"></div>
+  </div>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+function drawSparkline(svgId, values, colorHex, gradId) {
+  const svg = document.getElementById(svgId);
+  const width = 300, height = 64;
+  if (!values || values.length < 2) {
+    svg.innerHTML = '';
+    return;
+  }
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const range = Math.max(max - min, 1);
+  const stepX = width / (values.length - 1);
+  const points = values.map((v, i) => {
+    const x = i * stepX;
+    const y = height - ((v - min) / range) * (height - 8) - 4;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const linePoints = points.join(' ');
+  const areaPoints = `0,${height} ${linePoints} ${width},${height}`;
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${colorHex}" stop-opacity="0.35" />
+        <stop offset="100%" stop-color="${colorHex}" stop-opacity="0" />
+      </linearGradient>
+    </defs>
+    <polygon points="${areaPoints}" fill="url(#${gradId})" />
+    <polyline points="${linePoints}" fill="none" stroke="${colorHex}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+  `;
+}
+
+// 실시간 지표: 2초마다 갱신
+async function refreshStatus() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  document.getElementById('metric-requests').innerText = data.total_requests;
+  document.getElementById('metric-error-rate').innerText = data.error_rate_percent;
+  document.getElementById('metric-latency').innerText = data.avg_response_ms;
+
+  drawSparkline('response-sparkline', data.response_time_history, '#60a5fa', 'sparkFillResponse');
+  drawSparkline('error-sparkline', data.error_rate_history, '#f87171', 'sparkFillError');
+
+  const pct = Math.min(data.error_rate_percent, 100);
+  document.getElementById('error-gauge').style.setProperty('--pct', pct);
+  document.getElementById('error-gauge-text').innerText = pct + '%';
+
+  const badgeRow = document.getElementById('chaos-badge-row');
+  const badges = [];
+  if (data.cpu_load) badges.push('<span class="pill-badge chaos-badge-cpu">🔥 CPU 부하 진행중</span>');
+  if (data.error_mode) badges.push('<span class="pill-badge chaos-badge-error">💥 에러 주입 진행중</span>');
+  badgeRow.innerHTML = badges.length ? badges.join('') : '<span class="pill-badge chaos-badge-idle">✅ 정상</span>';
+}
+
+// 파드 요약: 3초마다 갱신
+async function refreshPodSummary() {
+  const textEl = document.getElementById('pod-summary-text');
+  const dotsEl = document.getElementById('pod-summary-dots');
+  try {
+    const res = await fetch('/api/pods');
+    const data = await res.json();
+    if (data.error) {
+      textEl.innerText = '⚠ ' + data.error;
+      dotsEl.innerHTML = '';
+      return;
+    }
+    const readyCount = data.pods.filter(p => p.ready).length;
+    textEl.innerText = `Ready ${readyCount} / ${data.pods.length}`;
+    dotsEl.innerHTML = data.pods
+      .map(p => `<span class="pod-dot ${p.ready ? 'pod-dot-ready' : 'pod-dot-not-ready'}" title="${p.name}"></span>`)
+      .join('');
+  } catch (e) {
+    textEl.innerText = '⚠ 파드 정보를 불러오지 못했습니다.';
+  }
+}
+
+setInterval(refreshStatus, 2000);
+setInterval(refreshPodSummary, 3000);
+refreshStatus();
+refreshPodSummary();
+</script>
+{% endblock %}

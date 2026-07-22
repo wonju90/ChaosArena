@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}기록 - K8s 장애 대응 게임 대시보드{% endblock %}
+
+{% block extra_style %}
+  .combo-banner {
+    margin-top: 14px;
+    background: linear-gradient(135deg, rgba(124, 45, 18, 0.5), rgba(154, 52, 18, 0.25));
+    border: 1px solid rgba(251, 146, 60, 0.35);
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-size: 14px;
+    color: #fed7aa;
+    display: none;
+  }
+  .combo-banner.show { display: block; }
+
+  /* 하이스코어 포디움 (1등 가운데, 크게) */
+  .podium-row {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 14px;
+    margin-top: 6px;
+  }
+  .podium-card {
+    flex: 1;
+    max-width: 160px;
+    background: rgba(15, 23, 42, 0.6);
+    border-radius: 12px;
+    text-align: center;
+    padding: 16px 10px;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+  }
+  .podium-card.rank-1 {
+    order: 2;
+    padding-top: 26px;
+    border-color: rgba(250, 204, 21, 0.4);
+    background: linear-gradient(165deg, rgba(250, 204, 21, 0.12), rgba(15, 23, 42, 0.6));
+  }
+  .podium-card.rank-2 { order: 1; }
+  .podium-card.rank-3 { order: 3; }
+  .podium-medal { font-size: 32px; }
+  .podium-card.rank-1 .podium-medal { font-size: 44px; }
+  .podium-seconds { font-size: 20px; font-weight: 800; margin-top: 6px; }
+  .podium-empty {
+    flex: 1;
+    max-width: 160px;
+    text-align: center;
+    color: #64748b;
+    font-size: 13px;
+    padding: 20px 10px;
+  }
+
+  /* 최근 기록 막대그래프 */
+  .history-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 120px;
+    margin-top: 12px;
+    padding: 0 4px;
+  }
+  .history-bar-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    height: 100%;
+  }
+  .history-bar {
+    width: 100%;
+    max-width: 28px;
+    border-radius: 6px 6px 2px 2px;
+    transition: height 0.3s ease-out;
+  }
+  .history-bar-rank-S { background: linear-gradient(180deg, #facc15, #a16207); }
+  .history-bar-rank-A { background: linear-gradient(180deg, #a78bfa, #6d28d9); }
+  .history-bar-rank-B { background: linear-gradient(180deg, #60a5fa, #1d4ed8); }
+  .history-bar-rank-C { background: linear-gradient(180deg, #94a3b8, #475569); }
+  .history-bar-label { font-size: 10px; color: #94a3b8; margin-top: 4px; }
+  .history-empty { color: #64748b; font-size: 14px; padding: 10px 0; }
+
+  .records-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .records-header-row h2 { margin: 0; }
+  #btn-reset-records {
+    background: rgba(127, 29, 29, 0.35);
+    color: #fca5a5;
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  #btn-reset-records:hover { background: rgba(127, 29, 29, 0.55); }
+
+  @media (max-width: 560px) {
+    .podium-row { flex-wrap: wrap; }
+    .podium-card { max-width: 45%; }
+    .podium-card.rank-1 { order: 0; max-width: 100%; padding-top: 16px; }
+    .podium-card.rank-2 { order: 1; }
+    .podium-card.rank-3 { order: 2; }
+  }
+{% endblock %}
+
+{% block content %}
+  <div class="panel">
+    <div class="records-header-row">
+      <h2>🏆 오늘의 기록</h2>
+      <button id="btn-reset-records" onclick="resetRecords()">🗑 기록 초기화</button>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-tile stat-accent-blue">
+        <div class="stat-icon">🚨</div>
+        <div class="stat-value" id="record-total">0</div>
+        <div class="stat-label">총 발생 횟수</div>
+      </div>
+      <div class="stat-tile stat-accent-orange">
+        <div class="stat-icon">⏱️</div>
+        <div class="stat-value"><span id="record-avg">-</span>초</div>
+        <div class="stat-label">평균 복구 시간</div>
+      </div>
+      <div class="stat-tile stat-accent-gold">
+        <div class="stat-icon">⭐</div>
+        <div class="stat-value"><span id="record-best">-</span>초</div>
+        <div class="stat-label">역대 최고 기록</div>
+      </div>
+    </div>
+    <div id="combo-banner" class="combo-banner"></div>
+  </div>
+
+  <div class="panel">
+    <h2>🥇 하이스코어 보드</h2>
+    <div id="podium-row" class="podium-row">
+      <div class="podium-empty">아직 기록이 없습니다</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>📈 최근 기록 추이</h2>
+    <div id="history-chart" class="history-chart">
+      <div class="history-empty">아직 기록이 없습니다</div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+const MEDALS = ['🥇', '🥈', '🥉'];
+
+function renderPodium(leaderboard) {
+  const row = document.getElementById('podium-row');
+  if (!leaderboard || leaderboard.length === 0) {
+    row.innerHTML = '<div class="podium-empty">아직 기록이 없습니다</div>';
+    return;
+  }
+  row.innerHTML = leaderboard
+    .map(entry => `
+      <div class="podium-card rank-${entry.rank_no}">
+        <div class="podium-medal">${MEDALS[entry.rank_no - 1] || '🎖'}</div>
+        <div class="podium-seconds">${entry.seconds}초</div>
+      </div>
+    `)
+    .join('');
+}
+
+function renderHistory(history) {
+  const chart = document.getElementById('history-chart');
+  if (!history || history.length === 0) {
+    chart.innerHTML = '<div class="history-empty">아직 기록이 없습니다</div>';
+    return;
+  }
+  const maxSeconds = Math.max(...history.map(h => h.seconds), 5);
+  chart.innerHTML = history
+    .map(h => {
+      const heightPct = Math.max((h.seconds / maxSeconds) * 100, 6);
+      return `
+        <div class="history-bar-wrap" title="${h.seconds}초 (${h.rank}랭크)">
+          <div class="history-bar history-bar-rank-${h.rank}" style="height:${heightPct}%;"></div>
+          <div class="history-bar-label">${h.rank}</div>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+// 하이스코어 보드: 3초마다 갱신
+async function refreshRecords() {
+  const res = await fetch('/api/records');
+  const data = await res.json();
+  document.getElementById('record-total').innerText = data.total_incidents;
+  document.getElementById('record-avg').innerText = data.avg_recovery_seconds;
+  document.getElementById('record-best').innerText =
+    data.best_recovery_seconds === null ? '-' : data.best_recovery_seconds;
+
+  renderPodium(data.leaderboard);
+  renderHistory(data.recent_history);
+
+  const comboEl = document.getElementById('combo-banner');
+  if (data.current_combo >= 2) {
+    comboEl.classList.add('show');
+    comboEl.innerText = `🔥 ${data.current_combo}연속 S랭크 중! (역대 최고 콤보: ${data.best_combo})`;
+  } else {
+    comboEl.classList.remove('show');
+  }
+}
+
+async function resetRecords() {
+  if (!confirm('오늘의 기록을 전부 초기화할까요? 되돌릴 수 없습니다.')) return;
+  await fetch('/api/records/reset', { method: 'POST' });
+  refreshRecords();
+}
+
+setInterval(refreshRecords, 3000);
+refreshRecords();
+</script>
+{% endblock %}

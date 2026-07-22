@@ -1,0 +1,19 @@
+# MetalLB가 광고할 IP 대역. addresses는 NHN Cloud Subnet 안에서 인스턴스에 할당되지 않은
+# 자유 IP 범위로 반드시 교체해야 한다 (콘솔의 Subnet 상세 화면에서 확인).
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: chaos-arena-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 10.0.1.240-10.0.1.250 # ← 실제 Subnet의 미사용 IP 범위로 교체
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: chaos-arena-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - chaos-arena-pool

@@ -1,0 +1,75 @@
+# ---------------------------------------------------------------------------
+# chaos-demo 워크로드 Deployment.
+# app.py의 LABEL_SELECTOR("app=chaos-demo")와 EXPECTED_REPLICAS(기본 3)에 맞춰
+# label/replicas를 구성했다. serviceAccountName은 rbac.yaml에서 만든 것과 짝을 이룬다.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-demo
+  namespace: default
+  labels:
+    app: chaos-demo
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: chaos-demo
+  template:
+    metadata:
+      labels:
+        app: chaos-demo
+    spec:
+      serviceAccountName: chaos-dashboard-sa
+      imagePullSecrets:
+        - name: ncr-secret
+      # 워커 노드가 정확히 3대이므로, replica 3개가 서로 다른 노드에 하나씩
+      # 배치되도록 강제한다. (대시보드의 "노드별 파드 그룹" 화면이 이 분산에 의존한다)
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: chaos-demo
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: chaos-demo
+          image: "{registry-address}/chaos-arena:v1" # NCR에 push한 실제 이미지 주소로 교체
+          ports:
+            - containerPort: 5000
+          env:
+            - name: LOCAL_MODE
+              value: "false"
+            - name: K8S_NAMESPACE
+              value: "default"
+            - name: EXPECTED_REPLICAS
+              value: "3"
+            - name: APP_VERSION
+              value: "v1"
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: slack-webhook
+                  key: url
+                  optional: true # secret이 없어도 파드가 정상적으로 뜨도록
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              # CPU 부하 버튼이 실제로 컨테이너 CPU를 태우기 때문에 limit이 꼭 필요하다.
+              # (없으면 부하 데모가 워커 노드 전체 성능에 영향을 줄 수 있다)
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 3
+            periodSeconds: 5

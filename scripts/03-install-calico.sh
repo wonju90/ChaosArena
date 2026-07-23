@@ -8,12 +8,19 @@ set -euo pipefail
 # 설치 시점에 https://github.com/projectcalico/calico/releases 에서 최신 stable로 갱신할 것.
 CALICO_VERSION="v3.32.1"
 
+# Pod CIDR. 02-master-init.sh의 --pod-network-cidr과 반드시 동일해야 하며,
+# 노드 서브넷(192.168.0.0/24)과 겹치지 않아야 한다.
+POD_CIDR="172.16.0.0/16"
+
 # CRD 번들 용량이 커서 kubectl apply는 request 크기 제한에 걸릴 수 있다 (Calico 공식 권장: create 사용).
 kubectl create -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
 
-# eBPF 데이터플레인(custom-resources-bpf.yaml)은 이 프로젝트 규모엔 과함.
-# 표준 iptables 기반 데이터플레인이면 충분하다.
-kubectl create -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/custom-resources.yaml"
+# custom-resources.yaml의 기본 ipPool CIDR은 192.168.0.0/16 이라 노드 서브넷과 겹친다.
+# 내려받아서 POD_CIDR로 치환한 뒤 적용한다.
+# (eBPF 데이터플레인은 이 규모엔 과하므로 표준 iptables 데이터플레인 사용)
+curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/custom-resources.yaml" \
+  | sed "s#192.168.0.0/16#${POD_CIDR}#g" \
+  | kubectl create -f -
 
 echo
 echo "설치가 끝날 때까지 몇 분 걸릴 수 있습니다. 아래 명령으로 진행 상황을 확인하세요:"

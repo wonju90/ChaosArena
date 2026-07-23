@@ -45,7 +45,7 @@ resource "nhncloud_networking_port_v2" "worker_port" {
 }
 
 resource "nhncloud_compute_instance_v2" "master" {
-  name              = "${var.cluster_label}-master"
+  name              = "ChaosArena-master-${var.cluster_label}"
   key_pair          = nhncloud_compute_keypair_v2.kp.name
   image_id          = data.nhncloud_images_image_v2.os.id
   flavor_id         = data.nhncloud_compute_flavor_v2.flavor.id
@@ -67,7 +67,7 @@ resource "nhncloud_compute_instance_v2" "master" {
 
 resource "nhncloud_compute_instance_v2" "worker" {
   count             = local.worker_count
-  name              = "${var.cluster_label}-worker-${count.index + 1}"
+  name              = "ChaosArena-worker${count.index + 1}-${var.cluster_label}"
   key_pair          = nhncloud_compute_keypair_v2.kp.name
   image_id          = data.nhncloud_images_image_v2.os.id
   flavor_id         = data.nhncloud_compute_flavor_v2.flavor.id

@@ -1,6 +1,10 @@
 # ---------------------------------------------------------------------------
-# 클러스터 하나(마스터 1대 + 워커 3대) 분량의 네트워크/인스턴스를 만드는 모듈.
+# 클러스터 하나(마스터 1대 + 워커 3대) 분량의 인스턴스를 만드는 모듈.
 # 루트 모듈에서 provider만 다르게(kr1/kr2) 이 모듈을 두 번 호출해서 멀티 클러스터를 구성한다.
+#
+# 네트워크는 새로 만들지 않고, 이미 인터넷 게이트웨이가 연결된 기존 VPC/서브넷을 재사용한다.
+# (NHN Cloud는 인터넷 게이트웨이를 라우팅테이블 하나에만 연결할 수 있고, Terraform
+#  프로바이더에 게이트웨이 생성 리소스가 없어서 새 VPC에는 외부 통신을 붙일 수 없다.)
 # ---------------------------------------------------------------------------
 
 variable "cluster_label" {
@@ -8,13 +12,13 @@ variable "cluster_label" {
   type        = string
 }
 
-variable "vpc_cidr" {
-  description = "이 클러스터 VPC의 IP 대역"
+variable "existing_vpc_id" {
+  description = "인스턴스를 배치할 기존 VPC ID (인터넷 게이트웨이가 연결된 'Default Network' VPC)"
   type        = string
 }
 
-variable "subnet_cidr" {
-  description = "이 클러스터 Subnet의 IP 대역 (vpc_cidr에 포함되는 범위)"
+variable "existing_subnet_id" {
+  description = "위 VPC 안에서 인스턴스가 붙을 기존 서브넷 ID"
   type        = string
 }
 
@@ -23,22 +27,13 @@ variable "availability_zone" {
   type        = string
 }
 
-variable "internet_gateway_id" {
-  description = <<-EOT
-    콘솔 Network > Internet Gateway 메뉴에서 확인하는 기존 게이트웨이 ID.
-    NHN Cloud Terraform 프로바이더에는 게이트웨이를 새로 만드는 리소스가 없어서,
-    이미 있는 게이트웨이의 ID를 참조만 한다.
-  EOT
-  type        = string
-}
-
 variable "image_name" {
-  description = "콘솔 인스턴스 생성 화면에 표시되는 정확한 이미지 이름 (예: \"Ubuntu Server 22.04.xxx LTS\")"
+  description = "콘솔 인스턴스 생성 화면에 표시되는 정확한 이미지 이름"
   type        = string
 }
 
 variable "flavor_name" {
-  description = "예: \"u2.c2m4\" (2 vCPU / 4GB) - 콘솔 Compute > Instance > Flavor 목록에서 확인"
+  description = "예: \"r2.c4m16\" (4 vCPU / 16GB) - 콘솔 Compute > Instance > Flavor 목록에서 확인"
   type        = string
 }
 
@@ -48,7 +43,7 @@ variable "key_pair_name" {
 }
 
 variable "ssh_public_key" {
-  description = "SSH 공개키 내용 (ssh-rsa AAAA... 형태)"
+  description = "SSH 공개키 내용 (RSA만 지원 - ssh-rsa AAAA... 형태. ed25519는 NHN Cloud가 거부함)"
   type        = string
 }
 

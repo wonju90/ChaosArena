@@ -43,8 +43,13 @@ variable "kr1_availability_zone" {
   default     = "kr-pub-a"
 }
 
-variable "kr1_internet_gateway_id" {
-  description = "콘솔 Network > Internet Gateway에서 확인한 KR1 게이트웨이 ID"
+variable "kr1_vpc_id" {
+  description = "KR1의 기존 'Default Network' VPC ID (인터넷 게이트웨이 연결됨)"
+  type        = string
+}
+
+variable "kr1_subnet_id" {
+  description = "위 VPC 안의 서브넷 ID (인스턴스 배치 대상)"
   type        = string
 }
 
@@ -54,20 +59,25 @@ variable "kr1_image_name" {
 }
 
 variable "kr1_flavor_name" {
-  description = "예: u2.c2m4 (2 vCPU / 4GB)"
+  description = "예: r2.c4m16 (4 vCPU / 16GB)"
   type        = string
 }
 
 # --- 클러스터 B (KR2, Standby) ---
 
 variable "kr2_availability_zone" {
-  description = "콘솔 인스턴스 생성 화면에서 확인"
+  description = "콘솔 인스턴스 생성 화면에서 확인 (KR2는 kr2-pub-a / kr2-pub-b)"
   type        = string
-  default     = "kr-pub-a"
+  default     = "kr2-pub-a"
 }
 
-variable "kr2_internet_gateway_id" {
-  description = "콘솔 Network > Internet Gateway에서 확인한 KR2 게이트웨이 ID"
+variable "kr2_vpc_id" {
+  description = "KR2의 기존 'Default Network' VPC ID (인터넷 게이트웨이 연결됨)"
+  type        = string
+}
+
+variable "kr2_subnet_id" {
+  description = "위 VPC 안의 서브넷 ID (인스턴스 배치 대상)"
   type        = string
 }
 
@@ -77,6 +87,6 @@ variable "kr2_image_name" {
 }
 
 variable "kr2_flavor_name" {
-  description = "예: u2.c2m4 (2 vCPU / 4GB)"
+  description = "예: r2.c4m16 (4 vCPU / 16GB)"
   type        = string
 }

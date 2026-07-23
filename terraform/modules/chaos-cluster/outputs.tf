@@ -3,7 +3,7 @@ output "master_public_ip" {
 }
 
 output "master_private_ip" {
-  value = nhncloud_compute_instance_v2.master.network[0].fixed_ip_v4
+  value = nhncloud_networking_port_v2.master_port.all_fixed_ips[0]
 }
 
 output "worker_public_ips" {
@@ -11,5 +11,5 @@ output "worker_public_ips" {
 }
 
 output "worker_private_ips" {
-  value = nhncloud_compute_instance_v2.worker[*].network[0].fixed_ip_v4
+  value = nhncloud_networking_port_v2.worker_port[*].all_fixed_ips[0]
 }

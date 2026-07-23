@@ -8,13 +8,18 @@ nhncloud_user_id  = "REPLACE_WITH_API_USER_ID"
 nhncloud_tenant_id = "REPLACE_WITH_TENANT_ID"
 nhncloud_password  = "REPLACE_WITH_API_PASSWORD"
 
+# SSH 공개키는 RSA만 지원 (ed25519는 NHN Cloud가 거부). ssh-keygen -t rsa -b 4096 로 생성.
 ssh_public_key = "ssh-rsa AAAA... your-public-key"
 admin_cidr     = "203.0.113.4/32" # 본인 접속 IP/32
 
-kr1_internet_gateway_id = "REPLACE_ME"
-kr1_image_name          = "Ubuntu Server 22.04.xxx LTS"
-kr1_flavor_name         = "u2.c2m4"
+# vpc_id / subnet_id 는 콘솔 Network > VPC / Subnet 에서 확인.
+# 인터넷 게이트웨이가 연결된 기존 VPC(보통 'Default Network')와 그 안의 서브넷을 지정한다.
+kr1_vpc_id      = "REPLACE_WITH_KR1_VPC_ID"
+kr1_subnet_id   = "REPLACE_WITH_KR1_SUBNET_ID"
+kr1_image_name  = "Ubuntu Server 22.04.5 LTS (2026.03.10)"
+kr1_flavor_name = "r2.c4m16"
 
-kr2_internet_gateway_id = "REPLACE_ME"
-kr2_image_name          = "Ubuntu Server 22.04.xxx LTS"
-kr2_flavor_name         = "u2.c2m4"
+kr2_vpc_id      = "REPLACE_WITH_KR2_VPC_ID"
+kr2_subnet_id   = "REPLACE_WITH_KR2_SUBNET_ID"
+kr2_image_name  = "Ubuntu Server 22.04.5 LTS (2026.03.10)"
+kr2_flavor_name = "r2.c4m16"

@@ -1,26 +1,5 @@
-resource "nhncloud_networking_vpc_v2" "vpc" {
-  name   = "${var.cluster_label}-chaos-vpc"
-  cidrv4 = var.vpc_cidr
-}
-
-resource "nhncloud_networking_routingtable_v2" "rt" {
-  name        = "${var.cluster_label}-chaos-rt"
-  vpc_id      = nhncloud_networking_vpc_v2.vpc.id
-  distributed = false
-}
-
-resource "nhncloud_networking_routingtable_attach_gateway_v2" "gw_attach" {
-  routingtable_id = nhncloud_networking_routingtable_v2.rt.id
-  gateway_id      = var.internet_gateway_id
-}
-
-resource "nhncloud_networking_vpcsubnet_v2" "subnet" {
-  name            = "${var.cluster_label}-chaos-subnet"
-  vpc_id          = nhncloud_networking_vpc_v2.vpc.id
-  cidr            = var.subnet_cidr
-  routingtable_id = nhncloud_networking_routingtable_v2.rt.id
-}
-
+# 보안그룹만 새로 만든다. VPC/서브넷/라우팅테이블/게이트웨이는 기존 것을 재사용하므로
+# 여기서 만들지 않는다.
 resource "nhncloud_networking_secgroup_v2" "sg" {
   name = "${var.cluster_label}-chaos-sg"
 }

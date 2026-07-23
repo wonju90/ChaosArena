@@ -3,8 +3,8 @@
 # terraform.tfvars.example을 복사해서 시작할 것.
 # ---------------------------------------------------------------------------
 
-variable "nhncloud_user_name" {
-  description = "NHN Cloud 콘솔 로그인 ID"
+variable "nhncloud_user_id" {
+  description = "Compute > Instance > Management > API 엔드포인트 설정에서 확인하는 'API 사용자 ID' (콘솔 로그인 이메일이 아님)"
   type        = string
 }
 
@@ -20,9 +20,9 @@ variable "nhncloud_password" {
 }
 
 variable "nhncloud_auth_url" {
-  description = "Compute > Instance > Management > API 엔드포인트 설정에서 확인하는 Identity URL"
+  description = "NHN Cloud Identity URL (Keystone v3). 콘솔의 신원 서비스 URL이 /v2.0으로 표시되더라도, 실제 인증은 v3만 지원하므로 /v3를 사용한다."
   type        = string
-  default     = "https://api-identity-infrastructure.nhncloudservice.com/v2.0"
+  default     = "https://api-identity-infrastructure.nhncloudservice.com/v3"
 }
 
 variable "ssh_public_key" {

@@ -96,13 +96,6 @@ resource "nhncloud_networking_floatingip_associate_v2" "master_fip_assoc" {
   port_id     = nhncloud_networking_port_v2.master_port.id
 }
 
-resource "nhncloud_networking_floatingip_v2" "worker_fip" {
-  count = local.worker_count
-  pool  = "Public Network"
-}
-
-resource "nhncloud_networking_floatingip_associate_v2" "worker_fip_assoc" {
-  count       = local.worker_count
-  floating_ip = nhncloud_networking_floatingip_v2.worker_fip[count.index].address
-  port_id     = nhncloud_networking_port_v2.worker_port[count.index].id
-}
+# 워커에는 플로팅IP를 붙이지 않는다. NHN Cloud 인터넷 게이트웨이가 서브넷 인스턴스에
+# outbound 인터넷(이미지 풀/apt)을 제공하므로 플로팅IP 없이도 클러스터 구성이 가능하다.
+# 워커 접속은 마스터를 점프호스트로 사용한다 (ssh -J ubuntu@<master-fip> ubuntu@<worker-사설IP>).

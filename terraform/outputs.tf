@@ -8,9 +8,9 @@ output "kr1_master_private_ip" {
   value       = module.cluster_kr1.master_private_ip
 }
 
-output "kr1_worker_public_ips" {
-  description = "클러스터 A 워커 3대 - SSH로 01/04번 스크립트를 실행할 대상"
-  value       = module.cluster_kr1.worker_public_ips
+output "kr1_worker_private_ips" {
+  description = "클러스터 A 워커 3대 사설IP - 마스터를 점프호스트로 SSH 접속 (ssh -J)"
+  value       = module.cluster_kr1.worker_private_ips
 }
 
 output "kr2_master_public_ip" {
@@ -23,7 +23,7 @@ output "kr2_master_private_ip" {
   value       = module.cluster_kr2.master_private_ip
 }
 
-output "kr2_worker_public_ips" {
-  description = "클러스터 B 워커 3대"
-  value       = module.cluster_kr2.worker_public_ips
+output "kr2_worker_private_ips" {
+  description = "클러스터 B 워커 3대 사설IP - 마스터를 점프호스트로 SSH 접속 (ssh -J)"
+  value       = module.cluster_kr2.worker_private_ips
 }

@@ -146,3 +146,28 @@ ChaosArena/
 │   └── terraform.tfvars.example
 └── docs/PROJECT_LOG.md     # (이 문서)
 ```
+
+---
+
+## 7. 참고 출처 (Provenance)
+
+이 프로젝트의 스크립트/매니페스트/IaC 코드는 **공식 문서의 표준 절차를 이 환경에 맞게
+조합·조정**해 작성했다. 외부 저장소를 복제한 것이 아니며, 아래 공식 소스를 근거로 한다.
+작성·검증 과정에서 웹 검색과 각 프로젝트의 공식 GitHub 리소스를 직접 조회해 버전과
+스키마를 확인했다.
+
+| 산출물 | 근거 공식 출처 |
+|---|---|
+| `scripts/01-node-common-setup.sh` (swap/containerd/kubeadm) | [Kubernetes 공식 kubeadm 설치 문서](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/), [pkgs.k8s.io 저장소](https://pkgs.k8s.io) |
+| `scripts/02-master-init.sh` (kubeadm init) | [kubeadm 클러스터 생성 문서](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/) |
+| `scripts/03-install-calico.sh` (Calico CNI) | [Calico(Tigera) 공식 설치 매니페스트](https://docs.tigera.io/calico/latest/getting-started/kubernetes/) |
+| `scripts/05-install-metallb.sh` (MetalLB) | [MetalLB 공식 매니페스트](https://metallb.universe.tf/installation/) |
+| `terraform/**` (NHN Cloud 리소스) | [nhn-cloud/terraform-provider-nhncloud 공식 문서](https://registry.terraform.io/providers/nhn-cloud/nhncloud/latest/docs) |
+| GSLB / DNS failover | [NHN Cloud DNS Plus 공식 문서](https://docs.nhncloud.com/ko/Network/DNS%20Plus/ko/overview/) |
+| 인터넷 게이트웨이 outbound 동작 | [NHN Cloud Internet Gateway 개요](https://docs.nhncloud.com/ko/Network/Internet%20Gateway/ko/overview/) |
+
+> **포트폴리오 노트**: 이 프로젝트의 핵심 가치는 스크립트를 손으로 타이핑했는지가 아니라,
+> "왜 이렇게 구성했는가(4장 의사결정)"와 "환경 특수적 문제를 어떻게 진단·해결했는가
+> (5장 트러블슈팅)"를 설명할 수 있다는 점에 있다. 표준 절차는 공식 문서를 근거로 하되,
+> Keystone v3 인증·인터넷 게이트웨이 제약·RAM 쿼터·Pod CIDR 충돌 등 이 환경에서만
+> 발생한 문제는 직접 원인을 격리하고 해결했다.

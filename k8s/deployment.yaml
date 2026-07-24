@@ -12,6 +12,14 @@ metadata:
     app: chaos-demo
 spec:
   replicas: 3
+  # replica 수(3)가 워커 노드 수(3)와 같고 podAntiAffinity로 노드당 1개만 허용하므로,
+  # 기본 롤링업데이트(새 파드를 먼저 띄움)는 4번째 파드가 올라갈 노드가 없어 교착된다.
+  # maxSurge=0으로 "기존 파드를 먼저 비우고 새 파드를 그 노드에 배치"하도록 한다.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: chaos-demo

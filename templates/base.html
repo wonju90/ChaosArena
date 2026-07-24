@@ -3,173 +3,147 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{% block title %}K8s 장애 대응 게임 대시보드{% endblock %}</title>
-<style>
-  * { box-sizing: border-box; }
+<title>{% block title %}ChaosArena — K8s 장애 대응 게임{% endblock %}</title>
 
+<!-- Tailwind CSS (Play CDN) : 빌드 없이 유틸리티 클래스 사용 -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink:      '#e6edf7',   // 기본 텍스트
+          subink:   '#94a3b8',   // 보조 텍스트
+          faint:    '#64748b',   // 흐린 텍스트
+          surface:  '#0b1220',   // 페이지 배경
+          panel:    '#111c30',   // 카드 배경 베이스
+          line:     'rgba(148,163,184,0.12)',
+          accent:   '#38bdf8',   // 시안 (주 강조)
+          good:     '#22c55e',
+          warn:     '#f59e0b',
+          bad:      '#ef4444',
+        },
+        fontFamily: {
+          sans: ['Pretendard', 'system-ui', '-apple-system', 'Segoe UI', 'Malgun Gothic', 'sans-serif'],
+        },
+        boxShadow: {
+          card: '0 8px 32px rgba(0,0,0,0.35)',
+          glow: '0 0 24px rgba(56,189,248,0.25)',
+        },
+      },
+    },
+  };
+</script>
+
+<!-- Chart.js : 실시간 라인/막대 차트 -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
+
+<style>
+  html, body { background-color: #0b1220; }
   body {
-    background:
-      radial-gradient(circle at 15% 0%, rgba(56, 189, 248, 0.08), transparent 40%),
-      radial-gradient(circle at 85% 20%, rgba(168, 85, 247, 0.07), transparent 45%),
-      #0f172a;
-    color: #e2e8f0;
-    font-family: "Pretendard", "Malgun Gothic", sans-serif;
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 20px;
+    background-image:
+      radial-gradient(900px circle at 12% -5%, rgba(56,189,248,0.10), transparent 45%),
+      radial-gradient(900px circle at 90% 8%, rgba(168,85,247,0.08), transparent 45%);
+    background-attachment: fixed;
   }
+
+  /* ── 재사용 컴포넌트 클래스 (JS가 생성/참조하는 것들 포함) ─────────────── */
 
   .panel {
-    background: linear-gradient(165deg, #1e293b 0%, #17233a 100%);
-    border: 1px solid rgba(148, 163, 184, 0.08);
-    border-radius: 14px;
-    padding: 18px 22px;
-    margin-bottom: 16px;
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
-    animation: panel-in 0.35s ease-out both;
+    background: linear-gradient(165deg, rgba(23,35,58,0.72), rgba(13,20,34,0.72));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(148,163,184,0.12);
+    border-radius: 18px;
+    padding: 20px 22px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+    animation: panel-in 0.4s cubic-bezier(0.2,0.7,0.2,1) both;
   }
-  @keyframes panel-in {
-    from { opacity: 0; transform: translateY(6px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .panel h2 {
-    margin: 0 0 12px 0;
-    font-size: 15px;
-    color: #94a3b8;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+  @keyframes panel-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  .panel-title {
+    display: flex; align-items: center; gap: 8px;
+    margin: 0 0 14px 0;
+    font-size: 12px; font-weight: 700;
+    color: #94a3b8; text-transform: uppercase; letter-spacing: 0.08em;
   }
 
-  /* 재사용 stat-tile: 아이콘 + 큰 숫자 + 라벨 카드 */
-  .stat-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 12px;
-  }
+  /* stat-tile : 아이콘 + 큰 숫자 + 라벨 */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
   .stat-tile {
-    background: rgba(15, 23, 42, 0.6);
-    border: 1px solid rgba(148, 163, 184, 0.12);
-    border-radius: 12px;
-    padding: 14px 16px;
-    transition: transform 0.15s, border-color 0.15s;
+    position: relative; overflow: hidden;
+    background: rgba(8,14,26,0.6);
+    border: 1px solid rgba(148,163,184,0.12);
+    border-radius: 14px; padding: 16px 18px;
+    transition: transform 0.18s ease, border-color 0.18s ease;
   }
-  .stat-tile:hover { transform: translateY(-2px); border-color: rgba(148, 163, 184, 0.3); }
-  .stat-tile .stat-icon { font-size: 20px; margin-bottom: 6px; }
-  .stat-tile .stat-value { font-size: 26px; font-weight: 800; line-height: 1.1; }
+  .stat-tile:hover { transform: translateY(-3px); border-color: rgba(56,189,248,0.4); }
+  .stat-tile::after {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--accent, #38bdf8); opacity: 0.9;
+  }
+  .stat-tile .stat-icon { font-size: 18px; opacity: 0.85; }
+  .stat-tile .stat-value {
+    font-size: 30px; font-weight: 800; line-height: 1.05; margin-top: 6px;
+    color: var(--accent, #e6edf7); font-variant-numeric: tabular-nums;
+  }
   .stat-tile .stat-label { font-size: 12px; color: #94a3b8; margin-top: 4px; }
-  .stat-accent-blue .stat-value { color: #60a5fa; }
-  .stat-accent-green .stat-value { color: #4ade80; }
-  .stat-accent-orange .stat-value { color: #fb923c; }
-  .stat-accent-red .stat-value { color: #f87171; }
-  .stat-accent-gold .stat-value { color: #facc15; }
+  .stat-accent-blue   { --accent: #38bdf8; }
+  .stat-accent-green  { --accent: #4ade80; }
+  .stat-accent-orange { --accent: #fb923c; }
+  .stat-accent-red    { --accent: #f87171; }
+  .stat-accent-gold   { --accent: #facc15; }
 
   .pill-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 12px;
-    font-weight: 600;
-    padding: 4px 10px;
-    border-radius: 999px;
-  }
-
-  /* 상단 네비게이션 (페이지 3개: 게임 / 대시보드 / 기록) */
-  .top-nav {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-  .nav-links {
-    display: flex;
-    gap: 6px;
-    background: rgba(15, 23, 42, 0.5);
-    padding: 5px;
-    border-radius: 12px;
-    border: 1px solid rgba(148, 163, 184, 0.1);
-  }
-  .nav-links a {
-    padding: 8px 16px;
-    border-radius: 8px;
-    background: transparent;
-    color: #94a3b8;
-    text-decoration: none;
-    font-size: 14px;
-    font-weight: 600;
-    transition: background 0.15s, color 0.15s, transform 0.15s;
-    display: inline-block;
-  }
-  .nav-links a:hover { background: #334155; color: #f1f5f9; }
-  .nav-links a.active {
-    background: linear-gradient(135deg, #334155, #475569);
-    color: #f8fafc;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  }
-
-  .nav-badges { display: flex; gap: 8px; align-items: center; }
-  #local-mode-badge {
-    font-size: 13px;
-    background: #713f12;
-    padding: 4px 10px;
-    border-radius: 999px;
-    color: #fde68a;
-    display: none; /* LOCAL_MODE일 때만 JS로 보여줌 */
-  }
-  #version-badge {
-    font-size: 13px;
-    background: #334155;
-    padding: 4px 10px;
-    border-radius: 999px;
-    color: #cbd5e1;
-  }
-
-  /* 다른 페이지에 있어도 미션 진행 상황을 놓치지 않도록 하는 네비게이션 배지 */
-  #mission-nav-badge {
-    font-size: 13px;
-    font-weight: 600;
-    background: rgba(124, 45, 18, 0.5);
-    padding: 4px 10px;
-    border-radius: 999px;
-    color: #fdba74;
-    display: none;
-    animation: mission-badge-pulse 1.4s ease-in-out infinite;
-  }
-  @keyframes mission-badge-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.55; }
-  }
-
-  /* 좁은 화면(모바일) 대응 */
-  @media (max-width: 560px) {
-    body { padding: 14px; }
-    .top-nav { flex-direction: column; align-items: stretch; }
-    .nav-links { justify-content: center; }
-    .nav-badges { justify-content: center; flex-wrap: wrap; }
-    .stat-grid { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
-    .stat-tile .stat-value { font-size: 22px; }
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: 999px;
+    border: 1px solid transparent;
   }
 
   {% block extra_style %}{% endblock %}
 </style>
 </head>
-<body>
+<body class="font-sans text-ink min-h-screen">
 
-<nav class="top-nav">
-  <div class="nav-links">
-    <a href="/" class="{{ 'active' if active_page == 'game' else '' }}">🎮 게임</a>
-    <a href="/monitor" class="{{ 'active' if active_page == 'monitor' else '' }}">📊 대시보드</a>
-    <a href="/records" class="{{ 'active' if active_page == 'records' else '' }}">🏆 기록</a>
-  </div>
-  <div class="nav-badges">
-    <span id="mission-nav-badge"></span>
-    <span id="local-mode-badge">🧪 로컬 모드 (가짜 데이터)</span>
-    <span id="version-badge">배포 버전: {{ version }}</span>
-  </div>
-</nav>
+<div class="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
 
-{% block content %}{% endblock %}
+  <!-- ── 헤더 ─────────────────────────────────────────────── -->
+  <header class="mb-6 flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <div class="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-accent/30 to-fuchsia-500/20 text-xl shadow-glow ring-1 ring-accent/30">
+        ⚡
+      </div>
+      <div>
+        <div class="text-lg font-extrabold tracking-tight leading-none">Chaos<span class="text-accent">Arena</span></div>
+        <div class="text-[11px] text-faint mt-0.5">K8s 자가치유 게임 대시보드</div>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-3">
+      <span id="mission-nav-badge" class="hidden pill-badge" style="background:rgba(124,45,18,0.5);color:#fdba74;border-color:rgba(251,146,60,0.3);"></span>
+      <span id="local-mode-badge" class="hidden pill-badge" style="background:rgba(113,63,18,0.6);color:#fde68a;border-color:rgba(234,179,8,0.3);">🧪 로컬 모드</span>
+      <span class="pill-badge" style="background:rgba(51,65,85,0.6);color:#cbd5e1;border-color:rgba(148,163,184,0.2);">🏷 {{ version }}</span>
+    </div>
+  </header>
+
+  <!-- ── 네비게이션 ───────────────────────────────────────── -->
+  <nav class="mb-6 inline-flex gap-1 rounded-2xl border border-line bg-slate-950/40 p-1.5 backdrop-blur">
+    {% set navitems = [('/', 'game', '🎮', '게임'), ('/monitor', 'monitor', '📊', '대시보드'), ('/records', 'records', '🏆', '기록')] %}
+    {% for path, key, icon, label in navitems %}
+    <a href="{{ path }}"
+       class="rounded-xl px-4 py-2 text-sm font-semibold transition
+       {% if active_page == key %}bg-gradient-to-br from-slate-700 to-slate-600 text-white shadow-md{% else %}text-subink hover:bg-slate-800 hover:text-white{% endif %}">
+      {{ icon }} {{ label }}
+    </a>
+    {% endfor %}
+  </nav>
+
+  {% block content %}{% endblock %}
+
+  <footer class="mt-8 text-center text-[11px] text-faint">
+    ChaosArena · 실제 Kubernetes 클러스터 위에서 동작하는 Self-Healing 데모
+  </footer>
+</div>
 
 <script>
 // LOCAL_MODE 여부는 배포 중 바뀌지 않으므로 페이지 로드 시 한 번만 확인한다.
@@ -177,30 +151,24 @@
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
-    if (data.local_mode) {
-      document.getElementById('local-mode-badge').style.display = 'inline-block';
-    }
-  } catch (e) {
-    // 배지 표시는 부가 정보라 실패해도 페이지 동작에는 영향 없음
-  }
+    if (data.local_mode) document.getElementById('local-mode-badge').classList.remove('hidden');
+  } catch (e) {}
 })();
 
-// 미션 진행 상황 배지: 게임 페이지가 아니어도 복구 중인지 알 수 있게 1초마다 확인한다.
-// (완료 판정/기록 갱신은 하지 않는 조회 전용 엔드포인트라 게임 페이지의 랭크 연출과 충돌하지 않는다)
+// 미션 진행 상황 배지: 게임 페이지가 아니어도 복구 중인지 1초마다 확인 (조회 전용 API).
 async function refreshMissionNavBadge() {
   try {
     const res = await fetch('/api/mission/peek');
     const data = await res.json();
     const badge = document.getElementById('mission-nav-badge');
     if (data.active) {
-      badge.style.display = 'inline-block';
-      badge.innerText = `🎯 복구 중... ${data.elapsed.toFixed(1)}초`;
+      badge.classList.remove('hidden');
+      badge.style.animation = 'pulse 1.4s ease-in-out infinite';
+      badge.innerText = `🎯 복구 중… ${data.elapsed.toFixed(1)}초`;
     } else {
-      badge.style.display = 'none';
+      badge.classList.add('hidden');
     }
-  } catch (e) {
-    // 배지 표시는 부가 정보라 실패해도 페이지 동작에는 영향 없음
-  }
+  } catch (e) {}
 }
 setInterval(refreshMissionNavBadge, 1000);
 refreshMissionNavBadge();

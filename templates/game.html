@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}게임 - K8s 장애 대응 게임 대시보드{% endblock %}
+{% block title %}게임 — ChaosArena{% endblock %}
 
 {% block extra_style %}
-  /* 화면 흔들림(screen shake) 효과: 파드 장애를 일으켰을 때 body 전체에 잠깐 적용 */
+  /* 화면 흔들림(screen shake): 파드 장애 발생 시 잠깐 적용 */
   body.shake { animation: shake-anim 0.4s; }
   @keyframes shake-anim {
     10%, 90% { transform: translateX(-2px); }
@@ -11,193 +11,71 @@
     40%, 60% { transform: translateX(8px); }
   }
 
-  /* 클러스터 상태 헤더 */
-  #cluster-status {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 20px;
-    font-weight: bold;
-  }
-  .icon-btn {
-    background: #334155;
-    border: none;
-    color: #f1f5f9;
-    font-size: 16px;
-    border-radius: 999px;
-    width: 32px;
-    height: 32px;
-    cursor: pointer;
-  }
-  .icon-btn:hover { background: #475569; }
-
-  /* 파드 격자 */
-  #pod-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
+  /* 파드 격자 (JS가 .pod-box 를 생성) */
+  #pod-grid { display: flex; flex-wrap: wrap; gap: 10px; }
   .pod-box {
-    width: 84px;
-    height: 60px;
-    border-radius: 8px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
-    text-align: center;
-    padding: 4px;
-    word-break: break-all;
-    transition: background 0.3s, border-color 0.3s;
+    position: relative; width: 96px; height: 66px;
+    border-radius: 12px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    font-size: 11px; text-align: center; padding: 6px;
+    word-break: break-all; overflow: hidden;
+    transition: background 0.3s, border-color 0.3s, box-shadow 0.3s, transform 0.2s;
   }
-  .pod-ready { background: #14532d; border: 1px solid #22c55e; }
-  .pod-not-ready { background: #7f1d1d; border: 1px solid #ef4444; }
-  .pod-node { font-size: 9px; color: #cbd5e1; margin-bottom: 2px; }
+  .pod-box:hover { transform: translateY(-2px); }
+  .pod-ready {
+    background: rgba(16,60,38,0.7); border: 1px solid rgba(34,197,94,0.55);
+    box-shadow: inset 0 0 12px rgba(34,197,94,0.12);
+  }
+  .pod-not-ready {
+    background: rgba(78,20,20,0.7); border: 1px solid rgba(239,68,68,0.6);
+    box-shadow: inset 0 0 12px rgba(239,68,68,0.18);
+    animation: pod-pulse 1s ease-in-out infinite;
+  }
+  @keyframes pod-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.65; } }
+  .pod-node { font-size: 9px; color: #94a3b8; margin-bottom: 3px; letter-spacing: 0.02em; }
 
-  /* 미션 + 타이머 */
-  #mission-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 16px;
-  }
-  #mission-timer { font-size: 22px; font-weight: bold; }
-  .mission-flavor { margin-top: 8px; font-size: 13px; color: #94a3b8; min-height: 18px; }
-
-  /* 랭크 구간 게이지: 복구 시간이 어느 랭크 구간에 있는지 시각적으로 보여줌 */
-  .rank-zone-bar {
-    position: relative;
-    display: flex;
-    height: 14px;
-    border-radius: 999px;
-    overflow: hidden;
-    margin-top: 14px;
-  }
+  /* 랭크 구간 게이지 */
+  .rank-zone-bar { position: relative; display: flex; height: 12px; border-radius: 999px; overflow: hidden; margin-top: 16px; }
   .rank-zone-segment { height: 100%; }
-  .rank-zone-segment.zone-S { background: linear-gradient(90deg, #facc15, #eab308); }
+  .rank-zone-segment.zone-S { background: linear-gradient(90deg, #fde047, #eab308); }
   .rank-zone-segment.zone-A { background: linear-gradient(90deg, #a78bfa, #8b5cf6); }
-  .rank-zone-segment.zone-B { background: linear-gradient(90deg, #60a5fa, #3b82f6); }
+  .rank-zone-segment.zone-B { background: linear-gradient(90deg, #38bdf8, #2563eb); }
   .rank-zone-segment.zone-C { background: linear-gradient(90deg, #94a3b8, #64748b); }
   .rank-zone-marker {
-    position: absolute;
-    top: -3px;
-    width: 4px;
-    height: 20px;
-    border-radius: 999px;
-    background: #f8fafc;
-    box-shadow: 0 0 8px rgba(248, 250, 252, 0.9);
-    transition: left 0.4s linear;
-    left: 0%;
+    position: absolute; top: -4px; width: 4px; height: 20px; border-radius: 999px;
+    background: #f8fafc; box-shadow: 0 0 10px rgba(248,250,252,0.95);
+    transition: left 0.4s linear; left: 0%;
   }
-  .rank-zone-labels { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; color: #64748b; }
+  .rank-zone-labels { display: flex; justify-content: space-between; margin-top: 7px; font-size: 10px; color: #64748b; }
 
-  /* 난이도 선택 */
-  #difficulty-row { display: flex; gap: 10px; flex-wrap: wrap; }
-  #difficulty-row button {
-    flex: 1;
-    min-width: 120px;
-    padding: 14px 10px;
-    border-radius: 10px;
-    border: 2px solid transparent;
-    background: #0f172a;
-    color: #f1f5f9;
-    font-size: 14px;
-    cursor: pointer;
-  }
-  #difficulty-row button:hover { filter: brightness(1.3); }
-  #difficulty-row small { display: block; font-size: 11px; color: #94a3b8; margin-top: 4px; }
-  #btn-easy { border-color: #22c55e; }
-  #btn-hard { border-color: #f97316; }
-  #btn-boss { border-color: #ef4444; }
+  /* 화면 전체 빨간 플래시 */
+  .flash-overlay { position: fixed; inset: 0; background: #ef4444; opacity: 0; pointer-events: none; z-index: 40; transition: opacity 0.3s ease-out; }
+  .flash-overlay.active { opacity: 0.32; transition: opacity 0s; }
 
-  /* Chaos 수동 토글 버튼 */
-  #button-row { display: flex; gap: 10px; flex-wrap: wrap; }
-  #button-row button {
-    flex: 1;
-    min-width: 120px;
-    padding: 12px;
-    font-size: 14px;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    background: #334155;
-    color: #f1f5f9;
-    transition: background 0.15s;
-  }
-  #button-row button:hover { background: #475569; }
-  #btn-cpu { background: #7c2d12; }
-  #btn-error { background: #7f1d1d; }
-  #btn-recover { background: #14532d; }
-
-  /* 화면 전체 빨간 플래시 (파드 장애 발생 순간) */
-  .flash-overlay {
-    position: fixed;
-    inset: 0;
-    background: #ef4444;
-    opacity: 0;
-    pointer-events: none;
-    z-index: 40;
-    transition: opacity 0.3s ease-out;
-  }
-  .flash-overlay.active { opacity: 0.35; transition: opacity 0s; }
-
-  /* 컨페티가 그려질 캔버스 */
-  .confetti-canvas {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 60;
-  }
+  .confetti-canvas { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
 
   /* 랭크 발표 오버레이 */
   .rank-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.75);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 50;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.2s;
+    position: fixed; inset: 0; background: rgba(2,6,18,0.82); backdrop-filter: blur(6px);
+    display: flex; align-items: center; justify-content: center; z-index: 50;
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
   }
   .rank-overlay.show { opacity: 1; pointer-events: auto; cursor: pointer; }
   .rank-card { text-align: center; animation: rank-pop 0.4s ease-out; }
-  @keyframes rank-pop {
-    0% { transform: scale(0.3); opacity: 0; }
-    60% { transform: scale(1.15); opacity: 1; }
-    100% { transform: scale(1); }
-  }
-  .rank-letter { font-size: 140px; font-weight: 900; line-height: 1; text-shadow: 0 0 40px currentColor; }
-  .rank-S { color: #facc15; }
-  .rank-A { color: #a78bfa; }
-  .rank-B { color: #60a5fa; }
-  .rank-C { color: #94a3b8; }
-  .rank-caption { font-size: 22px; font-weight: bold; margin-top: 8px; }
-  .rank-elapsed { font-size: 18px; color: #cbd5e1; margin-top: 4px; }
-  .rank-combo { font-size: 16px; color: #fb923c; margin-top: 10px; min-height: 20px; }
-  .rank-hint { font-size: 12px; color: #64748b; margin-top: 16px; }
+  @keyframes rank-pop { 0% { transform: scale(0.3); opacity: 0; } 60% { transform: scale(1.15); opacity: 1; } 100% { transform: scale(1); } }
+  .rank-letter { font-size: 150px; font-weight: 900; line-height: 1; text-shadow: 0 0 50px currentColor; }
+  .rank-S { color: #facc15; } .rank-A { color: #a78bfa; } .rank-B { color: #38bdf8; } .rank-C { color: #94a3b8; }
 
   /* 이벤트 토스트 */
   .event-toast {
-    position: fixed;
-    bottom: 24px;
-    left: 50%;
+    position: fixed; bottom: 26px; left: 50%;
     transform: translateX(-50%) translateY(20px);
-    background: #1e293b;
-    border: 1px solid #475569;
-    color: #f1f5f9;
-    padding: 10px 20px;
-    border-radius: 999px;
-    font-size: 14px;
-    opacity: 0;
-    transition: opacity 0.25s, transform 0.25s;
-    pointer-events: none;
-    z-index: 70;
-    max-width: 90vw;
-    text-align: center;
+    background: rgba(17,28,48,0.95); border: 1px solid rgba(148,163,184,0.25);
+    backdrop-filter: blur(8px); color: #f1f5f9;
+    padding: 11px 22px; border-radius: 999px; font-size: 14px;
+    opacity: 0; transition: opacity 0.25s, transform 0.25s;
+    pointer-events: none; z-index: 70; max-width: 90vw; text-align: center;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.4);
   }
   .event-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 {% endblock %}
@@ -211,34 +89,39 @@
 <div id="rank-overlay" class="rank-overlay" onclick="hideRankOverlay()">
   <div class="rank-card">
     <div id="rank-letter" class="rank-letter">S</div>
-    <div id="rank-caption" class="rank-caption">MISSION CLEAR!</div>
-    <div id="rank-elapsed" class="rank-elapsed">--</div>
-    <div id="rank-combo" class="rank-combo"></div>
-    <div class="rank-hint">화면을 클릭하면 닫혀요</div>
+    <div id="rank-caption" class="mt-2 text-2xl font-bold">MISSION CLEAR!</div>
+    <div id="rank-elapsed" class="mt-1 text-lg text-slate-300">--</div>
+    <div id="rank-combo" class="mt-3 min-h-[20px] text-base text-orange-400"></div>
+    <div class="mt-4 text-xs text-faint">화면을 클릭하면 닫혀요</div>
   </div>
 </div>
 
+<div class="grid gap-4">
+
   <!-- 클러스터 상태 -->
   <div class="panel">
-    <div id="cluster-status">
-      <span id="cluster-status-text">⚪ 상태 확인 중...</span>
-      <button id="mute-toggle" class="icon-btn" onclick="toggleMute()" title="효과음 켜기/끄기">🔊</button>
+    <div class="flex items-center justify-between">
+      <span id="cluster-status-text" class="text-xl font-bold">⚪ 상태 확인 중…</span>
+      <button id="mute-toggle" onclick="toggleMute()" title="효과음 켜기/끄기"
+        class="grid h-9 w-9 place-items-center rounded-full bg-slate-700 text-base transition hover:bg-slate-600">🔊</button>
     </div>
   </div>
 
   <!-- 파드 격자 -->
   <div class="panel">
-    <h2>🧩 파드 격자 (노드별 그룹)</h2>
-    <div id="pod-grid">로딩 중...</div>
+    <h2 class="panel-title">🧩 파드 격자 · 노드별 그룹</h2>
+    <div id="pod-grid" class="text-sm text-subink">로딩 중…</div>
   </div>
 
   <!-- 미션 + 타이머 -->
   <div class="panel">
-    <div id="mission-row">
-      <span id="mission-text">🎯 미션: 대기 중</span>
-      <span>⏱ 이번 복구 시간: <span id="mission-timer">--:--</span></span>
+    <div class="flex items-center justify-between">
+      <span id="mission-text" class="text-base font-semibold">🎯 미션: 대기 중</span>
+      <span class="text-sm text-subink">⏱ 이번 복구 시간
+        <b id="mission-timer" class="ml-1 text-2xl font-bold tabular-nums text-ink">--:--</b>
+      </span>
     </div>
-    <div id="mission-flavor" class="mission-flavor"></div>
+    <div id="mission-flavor" class="mt-2 min-h-[18px] text-[13px] text-subink"></div>
     <div class="rank-zone-bar" id="rank-zone-bar">
       <div class="rank-zone-marker" id="rank-zone-marker"></div>
     </div>
@@ -247,36 +130,47 @@
 
   <!-- 난이도 선택 -->
   <div class="panel">
-    <h2>🎮 난이도 선택</h2>
-    <div id="difficulty-row">
-      <button id="btn-easy" onclick="startChaos('/chaos/random-pod-kill', '이지')">
-        🟢 이지<small>파드 1개</small>
+    <h2 class="panel-title">🎮 난이도 선택</h2>
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <button onclick="startChaos('/chaos/random-pod-kill', '이지')"
+        class="group rounded-2xl border-2 border-green-500/70 bg-slate-950/50 p-4 text-left transition hover:border-green-400 hover:bg-green-500/10">
+        <div class="text-base font-bold">🟢 이지</div>
+        <div class="mt-1 text-xs text-subink">파드 1개 삭제</div>
       </button>
-      <button id="btn-hard" onclick="startChaos('/chaos/hard-mode', '하드')">
-        🟠 하드<small>파드 2개 동시</small>
+      <button onclick="startChaos('/chaos/hard-mode', '하드')"
+        class="group rounded-2xl border-2 border-orange-500/70 bg-slate-950/50 p-4 text-left transition hover:border-orange-400 hover:bg-orange-500/10">
+        <div class="text-base font-bold">🟠 하드</div>
+        <div class="mt-1 text-xs text-subink">파드 2개 동시 삭제</div>
       </button>
-      <button id="btn-boss" onclick="startChaos('/chaos/boss-mode', '보스전')">
-        🔴 보스전<small>파드2 + CPU + 에러</small>
+      <button onclick="startChaos('/chaos/boss-mode', '보스전')"
+        class="group rounded-2xl border-2 border-red-500/70 bg-slate-950/50 p-4 text-left transition hover:border-red-400 hover:bg-red-500/10">
+        <div class="text-base font-bold">🔴 보스전</div>
+        <div class="mt-1 text-xs text-subink">파드 2개 + CPU + 에러</div>
       </button>
     </div>
   </div>
 
   <!-- Chaos 수동 토글 -->
   <div class="panel">
-    <h2>⚡ Chaos 컨트롤</h2>
-    <div id="button-row">
-      <button id="btn-cpu" onclick="toggleCpu()">🔥 CPU 부하</button>
-      <button id="btn-error" onclick="toggleError()">💥 에러 발생</button>
-      <button id="btn-recover" onclick="recoverAll()">✅ 복구</button>
+    <h2 class="panel-title">⚡ Chaos 컨트롤</h2>
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <button onclick="toggleCpu()"
+        class="rounded-xl bg-orange-900/60 px-4 py-3 text-sm font-semibold text-orange-100 ring-1 ring-orange-500/30 transition hover:bg-orange-800/70">🔥 CPU 부하</button>
+      <button onclick="toggleError()"
+        class="rounded-xl bg-red-900/60 px-4 py-3 text-sm font-semibold text-red-100 ring-1 ring-red-500/30 transition hover:bg-red-800/70">💥 에러 발생</button>
+      <button onclick="recoverAll()"
+        class="rounded-xl bg-green-900/60 px-4 py-3 text-sm font-semibold text-green-100 ring-1 ring-green-500/30 transition hover:bg-green-800/70">✅ 복구</button>
     </div>
   </div>
+
+</div>
 
 {% endblock %}
 
 {% block extra_script %}
 <script>
 // ---------------------------------------------------------------------------
-// 이 화면은 새로고침 없이, 주기적으로 서버(API)에 물어봐서(polling) 화면을 갱신한다.
+// 이 화면은 새로고침 없이, 주기적으로 서버(API)에 폴링해서 화면을 갱신한다.
 // ---------------------------------------------------------------------------
 
 const RECOVERING_MESSAGES = [
@@ -294,15 +188,13 @@ const COMPLETE_MESSAGES = [
   '역시 Self-healing!',
   '복구 성공! 다음 도전은?',
 ];
-const RANK_COLORS = { S: '#facc15', A: '#a78bfa', B: '#60a5fa', C: '#94a3b8' };
+const RANK_COLORS = { S: '#facc15', A: '#a78bfa', B: '#38bdf8', C: '#94a3b8' };
 
 // 서버의 RANK_THRESHOLDS를 그대로 받아와서 게이지 구간을 만든다 (예: [[5,"S"],[10,"A"],[20,"B"]])
 const RANK_THRESHOLDS = {{ rank_thresholds | tojson }};
 const RANK_ZONE_MAX_SECONDS = RANK_THRESHOLDS[RANK_THRESHOLDS.length - 1][0] * 1.5;
 
-function pickRandom(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
+function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
 // 랭크 구간 게이지 초기 렌더링 (S/A/B/C 구간을 폭 비율로 나눠 그린다)
 function buildRankZoneBar() {
@@ -321,7 +213,6 @@ function buildRankZoneBar() {
   const cWidthPct = ((RANK_ZONE_MAX_SECONDS - prevLimit) / RANK_ZONE_MAX_SECONDS) * 100;
   segments.push(`<div class="rank-zone-segment zone-C" style="width:${cWidthPct}%;"></div>`);
   labels.push('<span>C</span>');
-
   bar.innerHTML = segments.join('') + marker.outerHTML;
   labelsEl.innerHTML = labels.join('');
 }
@@ -355,16 +246,10 @@ function triggerShake() {
 // 사운드 효과 (Web Audio API)
 let audioCtx = null;
 function getAudioContext() {
-  if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  }
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   return audioCtx;
 }
-
-function isMuted() {
-  return localStorage.getItem('chaosDashboardMuted') === 'true';
-}
-
+function isMuted() { return localStorage.getItem('chaosDashboardMuted') === 'true'; }
 function playTone(freq, durationMs, type, delayMs) {
   if (isMuted()) return;
   const ctx = getAudioContext();
@@ -372,20 +257,13 @@ function playTone(freq, durationMs, type, delayMs) {
   const gain = ctx.createGain();
   osc.type = type || 'sine';
   osc.frequency.value = freq;
-  osc.connect(gain);
-  gain.connect(ctx.destination);
+  osc.connect(gain); gain.connect(ctx.destination);
   const startAt = ctx.currentTime + (delayMs || 0) / 1000;
   gain.gain.setValueAtTime(0.15, startAt);
   gain.gain.exponentialRampToValueAtTime(0.001, startAt + durationMs / 1000);
-  osc.start(startAt);
-  osc.stop(startAt + durationMs / 1000);
+  osc.start(startAt); osc.stop(startAt + durationMs / 1000);
 }
-
-function playKillSound() {
-  playTone(440, 150, 'sawtooth', 0);
-  playTone(220, 200, 'sawtooth', 120);
-}
-
+function playKillSound() { playTone(440, 150, 'sawtooth', 0); playTone(220, 200, 'sawtooth', 120); }
 function playCompleteSound(rank) {
   const baseFreqByRank = { S: 880, A: 660, B: 523, C: 392 };
   const base = baseFreqByRank[rank] || 392;
@@ -393,7 +271,6 @@ function playCompleteSound(rank) {
   playTone(base * 1.25, 120, 'sine', 110);
   playTone(base * 1.5, 220, 'sine', 220);
 }
-
 function toggleMute() {
   const nowMuted = !isMuted();
   localStorage.setItem('chaosDashboardMuted', String(nowMuted));
@@ -403,41 +280,26 @@ function toggleMute() {
 // 컨페티(confetti)
 function fireConfetti(colorHex) {
   const canvas = document.getElementById('confetti-canvas');
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  canvas.width = window.innerWidth; canvas.height = window.innerHeight;
   const ctx = canvas.getContext('2d');
   const colors = [colorHex, '#ffffff', '#fde68a'];
   const particles = Array.from({ length: 80 }, () => ({
-    x: Math.random() * canvas.width,
-    y: -20 - Math.random() * canvas.height * 0.3,
-    size: 4 + Math.random() * 6,
-    speedY: 2 + Math.random() * 4,
-    speedX: -2 + Math.random() * 4,
-    rotation: Math.random() * 360,
-    rotSpeed: -10 + Math.random() * 20,
+    x: Math.random() * canvas.width, y: -20 - Math.random() * canvas.height * 0.3,
+    size: 4 + Math.random() * 6, speedY: 2 + Math.random() * 4, speedX: -2 + Math.random() * 4,
+    rotation: Math.random() * 360, rotSpeed: -10 + Math.random() * 20,
     color: colors[Math.floor(Math.random() * colors.length)],
   }));
-
   const startTime = performance.now();
   function frame(now) {
     const elapsed = now - startTime;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     particles.forEach((p) => {
-      p.x += p.speedX;
-      p.y += p.speedY;
-      p.rotation += p.rotSpeed;
-      ctx.save();
-      ctx.translate(p.x, p.y);
-      ctx.rotate((p.rotation * Math.PI) / 180);
-      ctx.fillStyle = p.color;
-      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
-      ctx.restore();
+      p.x += p.speedX; p.y += p.speedY; p.rotation += p.rotSpeed;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate((p.rotation * Math.PI) / 180);
+      ctx.fillStyle = p.color; ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size); ctx.restore();
     });
-    if (elapsed < 2200) {
-      requestAnimationFrame(frame);
-    } else {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
+    if (elapsed < 2200) requestAnimationFrame(frame);
+    else ctx.clearRect(0, 0, canvas.width, canvas.height);
   }
   requestAnimationFrame(frame);
 }
@@ -449,29 +311,20 @@ function showRankOverlay(rank, elapsedSeconds, combo) {
   const letterEl = document.getElementById('rank-letter');
   const elapsedEl = document.getElementById('rank-elapsed');
   const comboEl = document.getElementById('rank-combo');
-
   letterEl.innerText = rank;
   letterEl.className = 'rank-letter rank-' + rank;
   elapsedEl.innerText = elapsedSeconds.toFixed(1) + '초';
   comboEl.innerText = combo >= 2 ? `🔥 ${combo}연속 S랭크!` : '';
-
   overlay.classList.add('show');
   fireConfetti(RANK_COLORS[rank] || '#94a3b8');
   playCompleteSound(rank);
-
   clearTimeout(rankOverlayTimer);
   rankOverlayTimer = setTimeout(hideRankOverlay, 2600);
 }
-
-function hideRankOverlay() {
-  document.getElementById('rank-overlay').classList.remove('show');
-}
+function hideRankOverlay() { document.getElementById('rank-overlay').classList.remove('show'); }
 
 // 파드 격자 칸에 표시할 이름을 줄여준다.
-function shortPodLabel(name) {
-  const parts = name.split('-');
-  return parts.slice(-2).join('-');
-}
+function shortPodLabel(name) { return name.split('-').slice(-2).join('-'); }
 
 // 파드 격자: 2초마다 갱신, 노드별로 묶어서 표시
 async function refreshPods() {
@@ -479,42 +332,27 @@ async function refreshPods() {
   try {
     const res = await fetch('/api/pods');
     const data = await res.json();
-    if (data.error) {
-      gridEl.innerText = '⚠ ' + data.error;
-      updateClusterStatus(null);
-      return;
-    }
-
+    if (data.error) { gridEl.innerText = '⚠ ' + data.error; updateClusterStatus(null); return; }
     const byNode = {};
-    for (const pod of data.pods) {
-      if (!byNode[pod.node]) byNode[pod.node] = [];
-      byNode[pod.node].push(pod);
-    }
-
+    for (const pod of data.pods) { (byNode[pod.node] = byNode[pod.node] || []).push(pod); }
     gridEl.innerHTML = '';
     for (const node in byNode) {
       for (const pod of byNode[node]) {
         const box = document.createElement('div');
         box.className = 'pod-box ' + (pod.ready ? 'pod-ready' : 'pod-not-ready');
         box.innerHTML = `<div class="pod-node">${node}</div>` +
-                         `${pod.ready ? '🟩' : '🟥'} ${shortPodLabel(pod.name)}`;
+                        `<div>${pod.ready ? '🟩' : '🟥'} ${shortPodLabel(pod.name)}</div>`;
         gridEl.appendChild(box);
       }
     }
-
     updateClusterStatus(data.pods);
-  } catch (e) {
-    gridEl.innerText = '⚠ 파드 정보를 불러오지 못했습니다.';
-  }
+  } catch (e) { gridEl.innerText = '⚠ 파드 정보를 불러오지 못했습니다.'; }
 }
 
-// 클러스터 상태 텍스트 갱신 (파드 준비 상태 기준)
+// 클러스터 상태 텍스트 갱신
 function updateClusterStatus(pods) {
   const el = document.getElementById('cluster-status-text');
-  if (!pods) {
-    el.innerText = '⚪ 상태 확인 불가';
-    return;
-  }
+  if (!pods) { el.innerText = '⚪ 상태 확인 불가'; return; }
   const allReady = pods.length > 0 && pods.every(p => p.ready);
   el.innerText = allReady ? '🟢 클러스터 상태: 정상' : '🔴 클러스터 상태: 복구 중';
 }
@@ -526,7 +364,6 @@ async function refreshMission() {
   const textEl = document.getElementById('mission-text');
   const timerEl = document.getElementById('mission-timer');
   const flavorEl = document.getElementById('mission-flavor');
-
   if (data.status === 'idle') {
     textEl.innerText = '🎯 미션: 대기 중';
     timerEl.innerText = '--:--';
@@ -547,16 +384,12 @@ async function refreshMission() {
   }
 }
 
-// 난이도 선택 버튼 (이지 / 하드 / 보스전)
+// 난이도 선택 버튼
 async function startChaos(url, label) {
   const res = await fetch(url, { method: 'POST' });
   const data = await res.json();
-  if (data.error) {
-    showToast('⚠ ' + data.error);
-    return;
-  }
-  triggerShake();
-  playKillSound();
+  if (data.error) { showToast('⚠ ' + data.error); return; }
+  triggerShake(); playKillSound();
   showToast(pickRandom(KILL_MESSAGES) + ` (${label} 모드)`);
 }
 
@@ -566,29 +399,21 @@ async function toggleCpu() {
   const data = await res.json();
   showToast(data.cpu_load ? '🔥 CPU 부하 시작!' : '🔥 CPU 부하 종료');
 }
-
 async function toggleError() {
   const res = await fetch('/chaos/error', { method: 'POST' });
   const data = await res.json();
   showToast(data.error_mode ? '💥 에러 주입 시작!' : '💥 에러 주입 종료');
 }
-
 async function recoverAll() {
   await fetch('/chaos/recover', { method: 'POST' });
   showToast('✅ 모든 Chaos 모드 정상 복귀');
 }
 
-// 초기 음소거 버튼 아이콘 세팅
+// 초기화
 document.getElementById('mute-toggle').innerText = isMuted() ? '🔇' : '🔊';
-
-// 랭크 구간 게이지 최초 렌더링
 buildRankZoneBar();
-
-// 폴링 시작
 setInterval(refreshPods, 2000);
 setInterval(refreshMission, 500);
-
-// 처음 화면을 열었을 때도 바로 한 번 불러온다
 refreshPods();
 refreshMission();
 </script>

@@ -1,5 +1,8 @@
 {% extends "base.html" %}
-{% block title %}게임 — ChaosArena{% endblock %}
+{% import "_icons.html" as ic %}
+{% block title %}게임 콘솔 — ChaosArena{% endblock %}
+{% block page_title %}게임 콘솔{% endblock %}
+{% block page_sub %}장애를 일으키고 쿠버네티스의 자가치유를 실시간으로 지켜보세요{% endblock %}
 
 {% block extra_style %}
   /* 화면 흔들림(screen shake): 파드 장애 발생 시 잠깐 적용 */
@@ -11,28 +14,49 @@
     40%, 60% { transform: translateX(8px); }
   }
 
-  /* 파드 격자 (JS가 .pod-box 를 생성) */
-  #pod-grid { display: flex; flex-wrap: wrap; gap: 10px; }
-  .pod-box {
-    position: relative; width: 96px; height: 66px;
-    border-radius: 12px; display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    font-size: 11px; text-align: center; padding: 6px;
-    word-break: break-all; overflow: hidden;
-    transition: background 0.3s, border-color 0.3s, box-shadow 0.3s, transform 0.2s;
+  /* ── 파드 격자: 노드별 그룹 카드 (JS가 생성) ─────────────────── */
+  #pod-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .node-group {
+    background: #0b1220; border: 1px solid rgba(148,163,184,0.10);
+    border-radius: 11px; padding: 12px 13px; min-width: 0;
   }
-  .pod-box:hover { transform: translateY(-2px); }
-  .pod-ready {
-    background: rgba(16,60,38,0.7); border: 1px solid rgba(34,197,94,0.55);
-    box-shadow: inset 0 0 12px rgba(34,197,94,0.12);
+  .node-group-head {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+    padding-bottom: 9px; border-bottom: 1px solid rgba(148,163,184,0.08);
   }
+  .node-icon { flex: none; font-size: 13px; opacity: 0.8; }
+  .node-name {
+    flex: 1; min-width: 0; font-size: 12.5px; font-weight: 700; color: #cdd7e6;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .node-count {
+    flex: none; font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
+    background: rgba(34,197,94,0.14); color: #6ee7a8; border: 1px solid rgba(34,197,94,0.25);
+  }
+  .node-count.degraded { background: rgba(239,68,68,0.14); color: #fca5a5; border-color: rgba(239,68,68,0.3); }
+  .node-pods { display: flex; flex-direction: column; gap: 7px; }
+  .pod-chip {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    padding: 7px 9px; border-radius: 8px; font-size: 12px;
+    transition: background 0.3s, border-color 0.3s;
+  }
+  .pod-chip .pod-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+  .pod-chip .pod-name {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-variant-numeric: tabular-nums; color: #d7dfec;
+  }
+  .pod-chip .pod-state { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.03em; }
+  .pod-ready { background: rgba(16,60,38,0.5); border: 1px solid rgba(34,197,94,0.3); }
+  .pod-ready .pod-dot { background: #22c55e; box-shadow: 0 0 7px rgba(34,197,94,0.6); }
+  .pod-ready .pod-state { color: #6ee7a8; }
   .pod-not-ready {
-    background: rgba(78,20,20,0.7); border: 1px solid rgba(239,68,68,0.6);
-    box-shadow: inset 0 0 12px rgba(239,68,68,0.18);
+    background: rgba(78,20,20,0.5); border: 1px solid rgba(239,68,68,0.4);
     animation: pod-pulse 1s ease-in-out infinite;
   }
-  @keyframes pod-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.65; } }
-  .pod-node { font-size: 9px; color: #94a3b8; margin-bottom: 3px; letter-spacing: 0.02em; }
+  .pod-not-ready .pod-dot { background: #ef4444; box-shadow: 0 0 7px rgba(239,68,68,0.6); }
+  .pod-not-ready .pod-state { color: #fca5a5; }
+  @keyframes pod-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.72; } }
 
   /* 랭크 구간 게이지 */
   .rank-zone-bar { position: relative; display: flex; height: 12px; border-radius: 999px; overflow: hidden; margin-top: 16px; }
@@ -70,7 +94,7 @@
   .event-toast {
     position: fixed; bottom: 26px; left: 50%;
     transform: translateX(-50%) translateY(20px);
-    background: rgba(17,28,48,0.95); border: 1px solid rgba(148,163,184,0.25);
+    background: rgba(15,23,37,0.96); border: 1px solid rgba(148,163,184,0.25);
     backdrop-filter: blur(8px); color: #f1f5f9;
     padding: 11px 22px; border-radius: 999px; font-size: 14px;
     opacity: 0; transition: opacity 0.25s, transform 0.25s;
@@ -78,6 +102,16 @@
     box-shadow: 0 8px 30px rgba(0,0,0,0.4);
   }
   .event-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .ctrl-btn {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    width: 100%; text-align: left; border-radius: 10px; padding: 13px 15px;
+    border: 1px solid transparent; transition: background 0.15s, border-color 0.15s, transform 0.12s;
+  }
+  .ctrl-btn:hover { transform: translateY(-1px); }
+  .ctrl-btn .ctrl-title { font-size: 14px; font-weight: 700; }
+  .ctrl-btn .ctrl-desc { font-size: 11px; opacity: 0.8; }
+  .ctrl-btn .ctrl-mark { font-size: 18px; }
 {% endblock %}
 
 {% block content %}
@@ -96,70 +130,74 @@
   </div>
 </div>
 
-<div class="grid gap-4">
+<div class="grid gap-4 lg:grid-cols-3">
 
-  <!-- 클러스터 상태 -->
-  <div class="panel">
-    <div class="flex items-center justify-between">
-      <span id="cluster-status-text" class="text-xl font-bold">⚪ 상태 확인 중…</span>
+  <!-- ── 좌측: 모니터링 (파드 격자 + 미션) ─────────────────── -->
+  <div class="lg:col-span-2 flex flex-col gap-4">
+
+    <!-- 클러스터 상태 스트립 -->
+    <div class="panel flex items-center justify-between">
+      <span id="cluster-status-text" class="text-lg font-bold">⚪ 상태 확인 중…</span>
       <button id="mute-toggle" onclick="toggleMute()" title="효과음 켜기/끄기"
-        class="grid h-9 w-9 place-items-center rounded-full bg-slate-700 text-base transition hover:bg-slate-600">🔊</button>
+        class="grid h-9 w-9 place-items-center rounded-lg bg-slate-800 text-base transition hover:bg-slate-700">🔊</button>
+    </div>
+
+    <!-- 파드 격자 -->
+    <div class="panel">
+      <h2 class="panel-title">{{ ic.i('grid') }} 파드 토폴로지 · 노드별 그룹</h2>
+      <div id="pod-grid" class="text-sm text-subink">로딩 중…</div>
+    </div>
+
+    <!-- 미션 + 타이머 -->
+    <div class="panel">
+      <div class="flex items-center justify-between">
+        <span id="mission-text" class="text-base font-semibold">🎯 미션: 대기 중</span>
+        <span class="text-sm text-subink">⏱ 이번 복구 시간
+          <b id="mission-timer" class="ml-1 text-2xl font-bold tabular-nums text-ink">--:--</b>
+        </span>
+      </div>
+      <div id="mission-flavor" class="mt-2 min-h-[18px] text-[13px] text-subink"></div>
+      <div class="rank-zone-bar" id="rank-zone-bar">
+        <div class="rank-zone-marker" id="rank-zone-marker"></div>
+      </div>
+      <div class="rank-zone-labels" id="rank-zone-labels"></div>
     </div>
   </div>
 
-  <!-- 파드 격자 -->
-  <div class="panel">
-    <h2 class="panel-title">🧩 파드 격자 · 노드별 그룹</h2>
-    <div id="pod-grid" class="text-sm text-subink">로딩 중…</div>
-  </div>
+  <!-- ── 우측: 제어판 ─────────────────────────────────────── -->
+  <div class="flex flex-col gap-4">
 
-  <!-- 미션 + 타이머 -->
-  <div class="panel">
-    <div class="flex items-center justify-between">
-      <span id="mission-text" class="text-base font-semibold">🎯 미션: 대기 중</span>
-      <span class="text-sm text-subink">⏱ 이번 복구 시간
-        <b id="mission-timer" class="ml-1 text-2xl font-bold tabular-nums text-ink">--:--</b>
-      </span>
+    <div class="panel">
+      <h2 class="panel-title">{{ ic.i('sliders') }} 난이도 선택</h2>
+      <div class="flex flex-col gap-3">
+        <button onclick="startChaos('/chaos/random-pod-kill', '이지')"
+          class="ctrl-btn bg-green-500/5 border-green-500/40 hover:bg-green-500/12 hover:border-green-400">
+          <span><span class="ctrl-title text-green-300">🟢 이지</span><br><span class="ctrl-desc text-subink">파드 1개 삭제</span></span>
+        </button>
+        <button onclick="startChaos('/chaos/hard-mode', '하드')"
+          class="ctrl-btn bg-orange-500/5 border-orange-500/40 hover:bg-orange-500/12 hover:border-orange-400">
+          <span><span class="ctrl-title text-orange-300">🟠 하드</span><br><span class="ctrl-desc text-subink">파드 2개 동시 삭제</span></span>
+        </button>
+        <button onclick="startChaos('/chaos/boss-mode', '보스전')"
+          class="ctrl-btn bg-red-500/5 border-red-500/40 hover:bg-red-500/12 hover:border-red-400">
+          <span><span class="ctrl-title text-red-300">🔴 보스전</span><br><span class="ctrl-desc text-subink">파드 2개 + CPU + 에러</span></span>
+        </button>
+      </div>
     </div>
-    <div id="mission-flavor" class="mt-2 min-h-[18px] text-[13px] text-subink"></div>
-    <div class="rank-zone-bar" id="rank-zone-bar">
-      <div class="rank-zone-marker" id="rank-zone-marker"></div>
-    </div>
-    <div class="rank-zone-labels" id="rank-zone-labels"></div>
-  </div>
 
-  <!-- 난이도 선택 -->
-  <div class="panel">
-    <h2 class="panel-title">🎮 난이도 선택</h2>
-    <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <button onclick="startChaos('/chaos/random-pod-kill', '이지')"
-        class="group rounded-2xl border-2 border-green-500/70 bg-slate-950/50 p-4 text-left transition hover:border-green-400 hover:bg-green-500/10">
-        <div class="text-base font-bold">🟢 이지</div>
-        <div class="mt-1 text-xs text-subink">파드 1개 삭제</div>
-      </button>
-      <button onclick="startChaos('/chaos/hard-mode', '하드')"
-        class="group rounded-2xl border-2 border-orange-500/70 bg-slate-950/50 p-4 text-left transition hover:border-orange-400 hover:bg-orange-500/10">
-        <div class="text-base font-bold">🟠 하드</div>
-        <div class="mt-1 text-xs text-subink">파드 2개 동시 삭제</div>
-      </button>
-      <button onclick="startChaos('/chaos/boss-mode', '보스전')"
-        class="group rounded-2xl border-2 border-red-500/70 bg-slate-950/50 p-4 text-left transition hover:border-red-400 hover:bg-red-500/10">
-        <div class="text-base font-bold">🔴 보스전</div>
-        <div class="mt-1 text-xs text-subink">파드 2개 + CPU + 에러</div>
-      </button>
-    </div>
-  </div>
-
-  <!-- Chaos 수동 토글 -->
-  <div class="panel">
-    <h2 class="panel-title">⚡ Chaos 컨트롤</h2>
-    <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <button onclick="toggleCpu()"
-        class="rounded-xl bg-orange-900/60 px-4 py-3 text-sm font-semibold text-orange-100 ring-1 ring-orange-500/30 transition hover:bg-orange-800/70">🔥 CPU 부하</button>
-      <button onclick="toggleError()"
-        class="rounded-xl bg-red-900/60 px-4 py-3 text-sm font-semibold text-red-100 ring-1 ring-red-500/30 transition hover:bg-red-800/70">💥 에러 발생</button>
-      <button onclick="recoverAll()"
-        class="rounded-xl bg-green-900/60 px-4 py-3 text-sm font-semibold text-green-100 ring-1 ring-green-500/30 transition hover:bg-green-800/70">✅ 복구</button>
+    <div class="panel">
+      <h2 class="panel-title">{{ ic.i('bolt') }} Chaos 컨트롤</h2>
+      <div class="flex flex-col gap-2.5">
+        <button onclick="toggleCpu()"
+          class="ctrl-btn bg-orange-900/40 border-orange-500/25 text-orange-100 hover:bg-orange-800/50">
+          <span class="ctrl-title">🔥 CPU 부하</span><span class="ctrl-mark">→</span></button>
+        <button onclick="toggleError()"
+          class="ctrl-btn bg-red-900/40 border-red-500/25 text-red-100 hover:bg-red-800/50">
+          <span class="ctrl-title">💥 에러 발생</span><span class="ctrl-mark">→</span></button>
+        <button onclick="recoverAll()"
+          class="ctrl-btn bg-green-900/40 border-green-500/25 text-green-100 hover:bg-green-800/50">
+          <span class="ctrl-title">✅ 전체 복구</span><span class="ctrl-mark">→</span></button>
+      </div>
     </div>
   </div>
 
@@ -323,10 +361,10 @@ function showRankOverlay(rank, elapsedSeconds, combo) {
 }
 function hideRankOverlay() { document.getElementById('rank-overlay').classList.remove('show'); }
 
-// 파드 격자 칸에 표시할 이름을 줄여준다.
+// 파드 격자 칸에 표시할 이름을 줄여준다 (파드 해시 suffix 위주로).
 function shortPodLabel(name) { return name.split('-').slice(-2).join('-'); }
 
-// 파드 격자: 2초마다 갱신, 노드별로 묶어서 표시
+// 파드 격자: 2초마다 갱신, 노드별로 카드 그룹으로 표시
 async function refreshPods() {
   const gridEl = document.getElementById('pod-grid');
   try {
@@ -336,15 +374,30 @@ async function refreshPods() {
     const byNode = {};
     for (const pod of data.pods) { (byNode[pod.node] = byNode[pod.node] || []).push(pod); }
     gridEl.innerHTML = '';
-    for (const node in byNode) {
-      for (const pod of byNode[node]) {
-        const box = document.createElement('div');
-        box.className = 'pod-box ' + (pod.ready ? 'pod-ready' : 'pod-not-ready');
-        box.innerHTML = `<div class="pod-node">${node}</div>` +
-                        `<div>${pod.ready ? '🟩' : '🟥'} ${shortPodLabel(pod.name)}</div>`;
-        gridEl.appendChild(box);
-      }
-    }
+    Object.keys(byNode).sort().forEach(node => {
+      const pods = byNode[node];
+      const ready = pods.filter(p => p.ready).length;
+      const degraded = ready < pods.length;
+      const group = document.createElement('div');
+      group.className = 'node-group';
+      const podRows = pods.map(pod => {
+        const state = pod.ready ? 'READY' : (pod.phase || 'DOWN').toUpperCase();
+        return `
+        <div class="pod-chip ${pod.ready ? 'pod-ready' : 'pod-not-ready'}" title="${pod.name} · ${pod.phase || ''}">
+          <span class="pod-dot"></span>
+          <span class="pod-name">${shortPodLabel(pod.name)}</span>
+          <span class="pod-state">${state}</span>
+        </div>`;
+      }).join('');
+      group.innerHTML = `
+        <div class="node-group-head">
+          <span class="node-icon">🖥️</span>
+          <span class="node-name" title="${node}">${node}</span>
+          <span class="node-count ${degraded ? 'degraded' : ''}">${ready}/${pods.length}</span>
+        </div>
+        <div class="node-pods">${podRows}</div>`;
+      gridEl.appendChild(group);
+    });
     updateClusterStatus(data.pods);
   } catch (e) { gridEl.innerText = '⚠ 파드 정보를 불러오지 못했습니다.'; }
 }

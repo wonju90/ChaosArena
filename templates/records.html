@@ -1,12 +1,14 @@
 {% extends "base.html" %}
-{% block title %}기록 — ChaosArena{% endblock %}
+{% import "_icons.html" as ic %}
+{% block title %}기록실 — ChaosArena{% endblock %}
+{% block page_title %}기록실{% endblock %}
+{% block page_sub %}복구 성적, 하이스코어, 최근 기록 히스토리{% endblock %}
 
 {% block extra_style %}
   .combo-banner {
-    margin-top: 14px;
     background: linear-gradient(135deg, rgba(124,45,18,0.5), rgba(154,52,18,0.2));
     border: 1px solid rgba(251,146,60,0.35);
-    border-radius: 12px; padding: 11px 16px; font-size: 14px; color: #fed7aa;
+    border-radius: 10px; padding: 11px 16px; font-size: 14px; color: #fed7aa;
     display: none;
   }
   .combo-banner.show { display: block; }
@@ -14,15 +16,15 @@
   /* 하이스코어 포디움 (1등 가운데, 크게) — JS가 .podium-card 생성 */
   .podium-row { display: flex; align-items: flex-end; justify-content: center; gap: 14px; margin-top: 6px; }
   .podium-card {
-    flex: 1; max-width: 170px; background: rgba(8,14,26,0.6);
-    border-radius: 14px; text-align: center; padding: 18px 12px;
+    flex: 1; max-width: 150px; background: #0b1220;
+    border-radius: 12px; text-align: center; padding: 18px 12px;
     border: 1px solid rgba(148,163,184,0.12);
   }
   .podium-card.rank-1 {
     order: 2; padding: 30px 12px 22px;
     border-color: rgba(250,204,21,0.45);
-    background: linear-gradient(165deg, rgba(250,204,21,0.14), rgba(8,14,26,0.6));
-    box-shadow: 0 0 24px rgba(250,204,21,0.15);
+    background: linear-gradient(165deg, rgba(250,204,21,0.12), rgba(11,18,32,0.9));
+    box-shadow: 0 0 24px rgba(250,204,21,0.12);
   }
   .podium-card.rank-2 { order: 1; }
   .podium-card.rank-3 { order: 3; }
@@ -31,7 +33,7 @@
   .podium-seconds { font-size: 22px; font-weight: 800; margin-top: 8px; font-variant-numeric: tabular-nums; }
   .podium-empty { flex: 1; text-align: center; color: #64748b; font-size: 13px; padding: 24px 10px; }
 
-  #history-canvas-wrap { position: relative; height: 180px; margin-top: 8px; }
+  #history-canvas-wrap { position: relative; height: 200px; margin-top: 8px; }
   .history-empty { color: #64748b; font-size: 14px; padding: 24px 0; text-align: center; }
 
   #btn-reset-records {
@@ -50,44 +52,46 @@
 {% endblock %}
 
 {% block content %}
-<div class="grid gap-4">
+<div class="flex flex-col gap-4">
 
-  <div class="panel">
-    <div class="mb-3 flex items-center justify-between">
-      <h2 class="panel-title" style="margin:0;">🏆 오늘의 기록</h2>
-      <button id="btn-reset-records" onclick="resetRecords()">🗑 기록 초기화</button>
+  <!-- KPI -->
+  <div class="stat-grid">
+    <div class="stat-tile stat-accent-blue">
+      <div class="stat-icon">🚨</div>
+      <div class="stat-value" id="record-total">0</div>
+      <div class="stat-label">총 발생 횟수</div>
     </div>
-    <div class="stat-grid">
-      <div class="stat-tile stat-accent-blue">
-        <div class="stat-icon">🚨</div>
-        <div class="stat-value" id="record-total">0</div>
-        <div class="stat-label">총 발생 횟수</div>
-      </div>
-      <div class="stat-tile stat-accent-orange">
-        <div class="stat-icon">⏱️</div>
-        <div class="stat-value"><span id="record-avg">-</span><span class="text-lg">초</span></div>
-        <div class="stat-label">평균 복구 시간</div>
-      </div>
-      <div class="stat-tile stat-accent-gold">
-        <div class="stat-icon">⭐</div>
-        <div class="stat-value"><span id="record-best">-</span><span class="text-lg">초</span></div>
-        <div class="stat-label">역대 최고 기록</div>
-      </div>
+    <div class="stat-tile stat-accent-orange">
+      <div class="stat-icon">⏱️</div>
+      <div class="stat-value"><span id="record-avg">-</span><span class="text-lg">초</span></div>
+      <div class="stat-label">평균 복구 시간</div>
     </div>
-    <div id="combo-banner" class="combo-banner"></div>
-  </div>
-
-  <div class="panel">
-    <h2 class="panel-title">🥇 하이스코어 보드</h2>
-    <div id="podium-row" class="podium-row">
-      <div class="podium-empty">아직 기록이 없습니다</div>
+    <div class="stat-tile stat-accent-gold">
+      <div class="stat-icon">⭐</div>
+      <div class="stat-value"><span id="record-best">-</span><span class="text-lg">초</span></div>
+      <div class="stat-label">역대 최고 기록</div>
     </div>
   </div>
 
-  <div class="panel">
-    <h2 class="panel-title">📈 최근 복구 기록 <span class="text-faint">(빠를수록 좋음)</span></h2>
-    <div id="history-empty" class="history-empty">아직 기록이 없습니다</div>
-    <div id="history-canvas-wrap" style="display:none;"><canvas id="history-chart"></canvas></div>
+  <div id="combo-banner" class="combo-banner"></div>
+
+  <!-- 하이스코어 + 히스토리 2열 -->
+  <div class="grid gap-4 lg:grid-cols-2">
+    <div class="panel">
+      <h2 class="panel-title">{{ ic.i('trophy') }} 하이스코어 보드</h2>
+      <div id="podium-row" class="podium-row">
+        <div class="podium-empty">아직 기록이 없습니다</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="mb-3 flex items-center justify-between">
+        <h2 class="panel-title" style="margin:0;">{{ ic.i('bars') }} 최근 복구 기록 <span class="text-faint normal-case tracking-normal">· 빠를수록 좋음</span></h2>
+        <button id="btn-reset-records" onclick="resetRecords()">🗑 기록 초기화</button>
+      </div>
+      <div id="history-empty" class="history-empty">아직 기록이 없습니다</div>
+      <div id="history-canvas-wrap" style="display:none;"><canvas id="history-chart"></canvas></div>
+    </div>
   </div>
 
 </div>
@@ -97,10 +101,29 @@
 <script>
 Chart.defaults.color = '#94a3b8';
 Chart.defaults.borderColor = 'rgba(148,163,184,0.10)';
-Chart.defaults.font.family = "Pretendard, system-ui, sans-serif";
+Chart.defaults.font.family = "'Pretendard Variable', Pretendard, system-ui, sans-serif";
 
 const MEDALS = ['🥇', '🥈', '🥉'];
 const RANK_BAR_COLORS = { S: '#facc15', A: '#a78bfa', B: '#38bdf8', C: '#94a3b8' };
+
+// 막대 위에 값(초)을 직접 라벨로 표시하는 플러그인
+const barLabelPlugin = {
+  id: 'barLabels',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    const meta = chart.getDatasetMeta(0);
+    const data = chart.data.datasets[0].data;
+    meta.data.forEach((bar, idx) => {
+      ctx.save();
+      ctx.font = "700 10px 'Pretendard Variable', Pretendard, sans-serif";
+      ctx.fillStyle = '#cbd5e1';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(data[idx] + 's', bar.x, bar.y - 4);
+      ctx.restore();
+    });
+  },
+};
 
 function renderPodium(leaderboard) {
   const row = document.getElementById('podium-row');
@@ -135,12 +158,14 @@ function renderHistory(history) {
     historyChart = new Chart(document.getElementById('history-chart').getContext('2d'), {
       type: 'bar',
       data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 6, borderSkipped: false }] },
+      plugins: [barLabelPlugin],
       options: {
         responsive: true, maintainAspectRatio: false, animation: { duration: 400 },
+        layout: { padding: { top: 16 } },
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: 'rgba(17,28,48,0.95)', borderColor: 'rgba(148,163,184,0.25)', borderWidth: 1, padding: 10, displayColors: false,
+            backgroundColor: 'rgba(15,23,37,0.96)', borderColor: 'rgba(148,163,184,0.25)', borderWidth: 1, padding: 10, displayColors: false,
             callbacks: { label: (c) => `${c.parsed.y}초 · ${ranks[c.dataIndex]}랭크` },
           },
         },
@@ -164,7 +189,7 @@ function renderHistory(history) {
 async function refreshRecords() {
   const res = await fetch('/api/records');
   const data = await res.json();
-  document.getElementById('record-total').innerText = data.total_incidents;
+  document.getElementById('record-total').innerText = Number(data.total_incidents).toLocaleString();
   document.getElementById('record-avg').innerText = data.avg_recovery_seconds;
   document.getElementById('record-best').innerText =
     data.best_recovery_seconds === null ? '-' : data.best_recovery_seconds;

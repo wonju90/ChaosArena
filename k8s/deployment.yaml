@@ -44,7 +44,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
         - name: chaos-demo
-          image: "wonju90/chaos-arena:v2" # Docker Hub public 이미지 (NCR 권한 확보 시 NCR 주소로 교체)
+          image: "wonju90/chaos-arena:v3" # Docker Hub public 이미지 (NCR 권한 확보 시 NCR 주소로 교체)
           ports:
             - containerPort: 5000
           env:

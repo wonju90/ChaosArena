@@ -142,6 +142,7 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **KR2(평촌) 인스턴스 4대** 프로비저닝 — `ChaosArena-master-kr2`, `worker1~3-kr2`
 - [x] **KR2 kubeadm 클러스터 구축** — Calico CNI, 4대 전부 Ready
 - [x] **앱 배포(KR2)** — Docker Hub public 이미지(`wonju90/chaos-arena:v1`, NCR 권한 확보 전 임시 대안), NodePort(`:30080`) + 마스터 공인IP로 노출, 접속 확인 완료
+- [x] **핵심 데모 검증 완료** ⭐ — 브라우저에서 Chaos 버튼으로 실제 파드 삭제 → 진짜 kubeadm 클러스터가 새 파드를 자동 재생성하는 것까지 end-to-end 확인. 이 프로젝트의 본래 목표(Self-Healing 시각화)가 로컬 목업이 아닌 실제 자체 구축 클러스터 위에서 동작함을 증명.
 - [ ] KR1(판교) 메모리 쿼터 확보 → `cluster_kr1` 모듈 주석 해제 → 동일 구축
 - [ ] NCR 권한 확보 시 이미지 저장소를 Docker Hub → NCR로 전환
 - [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, KR1 구축 후)

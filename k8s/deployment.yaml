@@ -21,8 +21,10 @@ spec:
         app: chaos-demo
     spec:
       serviceAccountName: chaos-dashboard-sa
-      imagePullSecrets:
-        - name: ncr-secret
+      # Docker Hub public 이미지라 인증 불필요. NCR(비공개)로 전환 시 아래 주석을 풀고
+      # 이미지 주소를 NCR 주소로 바꾼 뒤 ncr-secret 을 생성한다.
+      # imagePullSecrets:
+      #   - name: ncr-secret
       # 워커 노드가 정확히 3대이므로, replica 3개가 서로 다른 노드에 하나씩
       # 배치되도록 강제한다. (대시보드의 "노드별 파드 그룹" 화면이 이 분산에 의존한다)
       affinity:
@@ -34,7 +36,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
         - name: chaos-demo
-          image: "{registry-address}/chaos-arena:v1" # NCR에 push한 실제 이미지 주소로 교체
+          image: "wonju90/chaos-arena:v1" # Docker Hub public 이미지 (NCR 권한 확보 시 NCR 주소로 교체)
           ports:
             - containerPort: 5000
           env:
@@ -45,10 +47,9 @@ spec:
             - name: EXPECTED_REPLICAS
               value: "3"
             - name: APP_VERSION
-              # 멀티 클러스터 구성 시 클러스터마다 다르게 채워서, 지금 어느 클러스터가
-              # 응답하고 있는지 대시보드 화면(배포 버전 배지)에서 바로 구분되게 한다.
-              # 예: 클러스터 A(KR1)="kr1-active", 클러스터 B(KR2)="kr2-standby"
-              value: "{cluster-label}"
+              # 클러스터마다 다르게 채워서 대시보드 배지로 어느 클러스터가 응답 중인지 구분.
+              # 현재 평촌 단독이므로 kr2. 멀티클러스터 확장 시 KR1은 kr1 등으로.
+              value: "kr2"
             - name: SLACK_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:

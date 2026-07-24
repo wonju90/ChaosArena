@@ -15,9 +15,14 @@ POD_CIDR="172.16.0.0/16"
 # CRD 번들 용량이 커서 kubectl apply는 request 크기 제한에 걸릴 수 있다 (Calico 공식 권장: create 사용).
 kubectl create -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
 
-# tigera-operator.yaml이 CRD를 만들지만, API 서버가 이를 등록하기까지 몇 초 걸린다.
-# 바로 custom-resources를 적용하면 'no matches for kind Installation' 레이스가 발생하므로,
-# Installation CRD가 established 될 때까지 기다린다.
+# tigera-operator.yaml이 CRD를 만들지만, API 서버에 등록되기까지 몇 초 걸린다.
+# 주의: kubectl wait는 대상이 "아예 없으면" 기다리지 않고 즉시 NotFound로 실패한다.
+# 그래서 (1) CRD가 생길 때까지 폴링으로 기다린 뒤, (2) established 조건을 기다린다.
+echo "Installation CRD 생성 대기 중..."
+for i in $(seq 1 30); do
+  kubectl get crd installations.operator.tigera.io >/dev/null 2>&1 && break
+  sleep 5
+done
 kubectl wait --for condition=established --timeout=120s crd/installations.operator.tigera.io
 
 # custom-resources.yaml의 기본 ipPool CIDR은 192.168.0.0/16 이라 노드 서브넷과 겹친다.

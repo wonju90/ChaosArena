@@ -108,23 +108,43 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **검증**: NHN Cloud 공식 문서 확인 결과, **인터넷 게이트웨이가 서브넷 인스턴스에 outbound 인터넷을 자동 제공**(AWS와 다른 모델). 플로팅IP는 오직 inbound(외부 접속받기)용.
 - **해결**: 워커는 플로팅IP 없이도 이미지 풀/apt 정상 동작. **마스터에만 플로팅IP**를 두어 단일 진입점으로 삼고, 워커는 마스터를 점프호스트(`ssh -J`)로 접속. NAT 게이트웨이 불필요, 플로팅IP 6개(리전당 3개) 절감.
 
+### 4.8 파드 간 노드 통신 불가 (Calico Running인데 실제 트래픽은 타임아웃) ⭐
+- **증상**: 앱 배포 후 파드 3개 모두 `Running`/`Ready`, Service·Endpoints도 정상 등록됐는데, NodePort(`:30080`)는 물론 **파드 IP로 직접 curl해도 타임아웃**. Calico 파드는 전부 `Running`이라 CNI 자체는 멀쩡해 보임.
+- **디버깅 순서**: 클라우드 인프라 레벨(보안그룹 규칙, Floating IP 연결, 포트 바인딩)을 먼저 API로 전부 조회해 정상임을 확인 → 문제를 K8s/OS 레벨로 좁힘 → NodePort(서비스 계층) 우회해서 ClusterIP·파드 IP로 직접 curl → **파드 IP 직접 접속도 실패**로 확인되면서 "서비스 문제가 아니라 노드 간 파드 네트워크 자체의 문제"로 원인 범위를 좁힘.
+- **원인**: Calico의 기본 encapsulation 모드는 `VXLANCrossSubnet` — **같은 서브넷에 있는 노드끼리는 캡슐화를 안 하고 파드 IP를 그대로 노출**해서 라우팅한다. 그런데 우리 노드 4대가 전부 같은 서브넷(`192.168.0.0/24`)에 있고, **NHN Cloud(OpenStack 기반)는 포트에 등록된 IP가 아닌 출발지를 가진 패킷을 자동 차단(anti-spoofing/포트 시큐리티)**한다. 그래서 파드 IP를 출발지로 하는 노드 간 트래픽이 클라우드 네트워크 레이어에서 조용히 버려졌다.
+- **해결**: Calico Installation 리소스를 패치해 encapsulation을 `VXLAN`(Always)으로 변경 — 캡슐화된 패킷의 겉봉투 출발지 IP가 노드 자신의 IP가 되어 포트 시큐리티를 통과한다.
+  ```bash
+  kubectl patch installation default --type=merge -p \
+    '{"spec":{"calicoNetwork":{"ipPools":[{"cidr":"172.16.0.0/16","encapsulation":"VXLAN","natOutgoing":"Enabled","nodeSelector":"all()"}]}}}'
+  ```
+  (patch 중 `natOutgoing`을 boolean `true`로 잘못 넣어 1차 시도가 검증 에러로 거부된 해프닝도 있었음 — 이 필드는 문자열 enum `"Enabled"/"Disabled"`여야 함)
+- **재발 방지**: `scripts/03-install-calico.sh`에 `sed`로 `VXLANCrossSubnet → VXLAN` 치환을 추가해, 이후 클러스터(KR1 확장 등)는 처음부터 이 문제를 겪지 않도록 반영.
+- **알아둘 점**: 이 이슈는 "Calico가 왜 이렇게 설계됐는가"보다 "**이 클라우드의 네트워크 보안 모델과 CNI의 기본 가정이 충돌**"하는 문제였다. 온프레미스/베어메탈이면 문제없었을 설정이 OpenStack 기반 클라우드에서만 드러난다.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
 3. **플랫폼별 모델 차이 검증** — "AWS는 이러니 NHN도 그럴 것"이라는 가정(인터넷 게이트웨이 outbound)이 틀렸다. 공식 문서로 확인.
 4. **프로바이더의 한계를 아키텍처로 우회** — 게이트웨이/NAT 생성 리소스 부재를 "기존 VPC 재사용"으로 해결.
+5. **레이어를 하나씩 벗겨가며 범위를 좁힐 것** — 외부 접속 실패를 클라우드 방화벽→NodePort→서비스→파드 IP 순으로 우회 테스트하며, "어디까지는 되고 어디부터 안 되는지"로 원인을 좁혔다 (4.8).
 
 ---
 
 ## 5. 현재 진행 상황
 
+> **계획 변경**: 원래 KR1(판교)+KR2(평촌) 동시 구축 예정이었으나, KR1 리전 RAM 쿼터가 부족해
+> **KR2(평촌)만 먼저 구축**하고, 판교 쿼터 확보 후 멀티클러스터로 확장하는 방향으로 조정.
+> (`terraform/main.tf`의 `cluster_kr1` 모듈은 일시 주석 처리, 값은 보존)
+
 - [x] 앱: 멀티 페이지 분리 + 시각화/디자인 시스템
 - [x] Git/GitHub 저장소 구성 (`infra/k8s-setup` 브랜치에서 인프라 작업)
 - [x] Terraform 멀티 리전 인프라 코드 (모듈화, v3 인증, 기존 VPC 재사용, 포트 기반 배치)
-- [x] 인스턴스 8대(마스터1+워커3 × 2리전) 프로비저닝 — `ChaosArena-master-kr1` 등 네이밍
-- [ ] kubeadm 클러스터 구축 (Calico CNI, MetalLB) — `scripts/01~05`
-- [ ] NCR 이미지 빌드·푸시 + 앱 배포 (`k8s/`)
-- [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`)
+- [x] **KR2(평촌) 인스턴스 4대** 프로비저닝 — `ChaosArena-master-kr2`, `worker1~3-kr2`
+- [x] **KR2 kubeadm 클러스터 구축** — Calico CNI, 4대 전부 Ready
+- [x] **앱 배포(KR2)** — Docker Hub public 이미지(`wonju90/chaos-arena:v1`, NCR 권한 확보 전 임시 대안), NodePort(`:30080`) + 마스터 공인IP로 노출, 접속 확인 완료
+- [ ] KR1(판교) 메모리 쿼터 확보 → `cluster_kr1` 모듈 주석 해제 → 동일 구축
+- [ ] NCR 권한 확보 시 이미지 저장소를 Docker Hub → NCR로 전환
+- [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, KR1 구축 후)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

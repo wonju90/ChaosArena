@@ -25,11 +25,17 @@ for i in $(seq 1 30); do
 done
 kubectl wait --for condition=established --timeout=120s crd/installations.operator.tigera.io
 
-# custom-resources.yaml의 기본 ipPool CIDR은 192.168.0.0/16 이라 노드 서브넷과 겹친다.
-# 내려받아서 POD_CIDR로 치환한 뒤 적용한다.
+# custom-resources.yaml에서 두 가지를 치환해서 적용한다:
+#   1) 기본 ipPool CIDR(192.168.0.0/16)이 노드 서브넷과 겹치므로 POD_CIDR로 교체.
+#   2) 기본 encapsulation(VXLANCrossSubnet)은 "같은 서브넷 노드끼리는 캡슐화 안 함"이라,
+#      NHN Cloud(OpenStack)의 포트 시큐리티(anti-spoofing)가 파드 IP를 출발지로 하는
+#      노드 간 패킷을 그대로 차단한다 - 우리 노드 4대가 전부 같은 서브넷이라 실제로 발생함
+#      (증상: calico-node는 Running인데 파드 IP로 노드 간 curl이 타임아웃).
+#      VXLAN(항상 캡슐화)로 바꾸면 패킷의 겉봉투 출발지 IP가 노드 자신의 IP가 되어 통과한다.
 # (eBPF 데이터플레인은 이 규모엔 과하므로 표준 iptables 데이터플레인 사용)
 curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/custom-resources.yaml" \
   | sed "s#192.168.0.0/16#${POD_CIDR}#g" \
+  | sed "s#VXLANCrossSubnet#VXLAN#g" \
   | kubectl create -f -
 
 echo

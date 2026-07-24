@@ -17,7 +17,7 @@
 | 영역 | 기술 |
 |---|---|
 | 앱 | Python Flask, Prometheus client, Kubernetes Python client |
-| 프론트 | Vanilla JS (폴링 기반 실시간 대시보드), SVG 차트 |
+| 프론트 | Vanilla JS (폴링 기반 실시간 대시보드), Tailwind CSS, Chart.js |
 | 인프라 | NHN Cloud, Terraform(IaC), kubeadm 자체 구축 클러스터 |
 | 네트워크/CNI | Calico, MetalLB |
 | 멀티 리전 | NHN Cloud DNS Plus GSLB (Active/Standby failover) |
@@ -35,9 +35,12 @@
 
 Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션·디자인 시스템을 공유하고, 페이지별로 필요한 API만 폴링하도록 JS를 분리했다.
 
-### 2.2 디자인 시스템 & 시각화
-- 재사용 `stat-tile` 카드, 그라디언트 배경, 페이드인 애니메이션
-- SVG 스파크라인(응답시간·에러율 추이), conic-gradient 도넛 게이지, 랭크 구간 진행바
+### 2.2 디자인 시스템 & 시각화 (운영 콘솔 리디자인)
+초기 버전은 "허접해 보인다"는 피드백을 받아, **Grafana/Datadog 풍 운영 콘솔** 방향으로 전면 재설계했다.
+- **앱 셸**: 좌측 사이드바 네비게이션(SVG 아이콘) + 상단바(페이지 제목 + 모든 페이지 공통 클러스터 헬스 칩) + 멀티컬럼 그리드. 좁은 화면에선 사이드바가 상단 탭바로 전환.
+- **파드 토폴로지**: 초기엔 파드를 고정 크기 박스에 욱여넣어 긴 노드명(`chaosarena-worker1-kr2`)이 줄바꿈·잘림으로 지저분했다. → **노드별 그룹 카드**로 재구성하고 노드명은 헤더에서 말줄임(`…`)+툴팁, 파드는 상태 점+이름+실제 phase(`Running`/`Pending`/`ContainerCreating`) 칩으로 표시.
+- **차트**: `stat-tile` KPI, Chart.js 라인 차트(호버 크로스헤어 + 최신값 직접 라벨), 도넛 게이지, 막대 차트(막대별 값 라벨). 재사용 SVG 아이콘은 `_icons.html` 매크로로 관리.
+- 웹폰트 Pretendard 로드, 숫자 천단위 구분 등 타이포/가독성 디테일.
 - 어느 페이지에 있어도 미션 진행을 알 수 있는 네비게이션 실시간 배지(`/api/mission/peek` — 완료 판정과 분리한 조회 전용 API로 랭크 연출과의 경쟁 방지)
 
 ---
@@ -121,6 +124,21 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **재발 방지**: `scripts/03-install-calico.sh`에 `sed`로 `VXLANCrossSubnet → VXLAN` 치환을 추가해, 이후 클러스터(KR1 확장 등)는 처음부터 이 문제를 겪지 않도록 반영.
 - **알아둘 점**: 이 이슈는 "Calico가 왜 이렇게 설계됐는가"보다 "**이 클라우드의 네트워크 보안 모델과 CNI의 기본 가정이 충돌**"하는 문제였다. 온프레미스/베어메탈이면 문제없었을 설정이 OpenStack 기반 클라우드에서만 드러난다.
 
+### 4.9 롤링 업데이트 교착 (replica 수 = 노드 수 + 필수 anti-affinity) ⭐
+- **증상**: 새 이미지로 `kubectl apply` 후 `rollout status`가 `Waiting ... 0 out of 3 new replicas ...`에서 멈춤. 새 파드가 `Pending`으로 스케줄되지 못함.
+- **원인**: replica 3개 = 워커 노드 3대이고, `podAntiAffinity`(노드당 1개, `requiredDuringScheduling`)가 걸려 있다. 기본 롤링업데이트 전략은 `maxSurge`로 **새 파드를 먼저 띄운 뒤** 옛 파드를 내리는데, 4번째 파드가 올라갈 빈 노드가 없어 스케줄 불가 → 교착. (`FailedScheduling: didn't match pod anti-affinity rules`)
+- **해결**: 전략을 `maxSurge: 0` / `maxUnavailable: 1`로 변경 — "옛 파드를 **먼저 1개 비우고** 그 노드에 새 파드를 배치"하도록 순서를 뒤집었다. 교체 중 순간적으로 2/3로 줄지만 무중단 롤아웃이 진행된다.
+- **알아둘 점**: "replica 수를 노드 수에 딱 맞추고 노드당 1개 강제"라는 구성(노드 분산 시각화를 위해 의도한 것)은 기본 롤링업데이트와 상성이 나쁘다. 데모의 요구(정확한 노드 분산)와 배포 전략이 충돌한 사례.
+
+### 4.10 NCR 이미지 Pull 실패 (`412 Precondition Failed`) ⭐
+- **배경**: 임시로 쓰던 Docker Hub public 이미지를 **NHN NCR(비공개 레지스트리)**로 전환. 레지스트리 생성 → 이미지 태깅/푸시 → `ncr-secret`(docker-registry) 생성 → `deployment.yaml`에 NCR 주소 + `imagePullSecrets` 반영까지 완료.
+- **증상**: 롤아웃 중 새 파드가 `ErrImagePull`/`ImagePullBackOff`. 이벤트 로그: `failed to resolve image: unexpected status from HEAD request to .../manifests/v3: 412 Precondition Failed`.
+- **원인 격리**: 에러가 401/403(인증)이나 타임아웃(네트워크)이 **아니라** 412라는 점이 핵심. 즉 **KR2 워커 → KR1 리전 NCR 네트워크도, ncr-secret 인증도 정상**이고, 레지스트리가 응답을 준 뒤 **정책 단계에서 거부**한 것. NHN NCR은 Harbor 기반이며, Harbor는 content-trust 정책 위반 시 412를 반환한다.
+- **원인**: 레지스트리 생성 시 켜둔 **"미인증 이미지 Pull 방지"** 옵션은 "로그인 인증 요구"가 아니라 **"서명(signature)되지 않은 이미지의 Pull 차단"**(content-trust)이었다. `docker push`만 한 이미지는 서명이 없어 정책에 걸렸다.
+- **해결**: 데모 단계에선 레지스트리 설정에서 "미인증 이미지 Pull 방지"를 **미설정**으로 변경(이미 push된 이미지 재사용, 재push 불필요) → 멈춘 파드 삭제로 즉시 재시도 → 정상 Pull/롤아웃 완료.
+- **트레이드오프**: 프로덕션이라면 정책을 켠 채 **이미지 서명(cosign 등)**을 도입하는 게 공급망 보안상 맞다. 포트폴리오에선 "정책 완화 vs 서명 도입"을 인지하고 선택한 것 자체가 의사결정 근거가 된다.
+- **알아둘 점**: 클라우드 콘솔 옵션의 한글 라벨("미인증 이미지 Pull 방지")을 액면대로 "인증 필요"로 오해하기 쉬웠다. **HTTP 상태코드(412 vs 401/403)로 "인증 문제가 아니라 정책 문제"임을 갈라낸 것**이 원인 격리의 결정적 단서였다.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -141,11 +159,13 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] Terraform 멀티 리전 인프라 코드 (모듈화, v3 인증, 기존 VPC 재사용, 포트 기반 배치)
 - [x] **KR2(평촌) 인스턴스 4대** 프로비저닝 — `ChaosArena-master-kr2`, `worker1~3-kr2`
 - [x] **KR2 kubeadm 클러스터 구축** — Calico CNI, 4대 전부 Ready
-- [x] **앱 배포(KR2)** — Docker Hub public 이미지(`wonju90/chaos-arena:v1`, NCR 권한 확보 전 임시 대안), NodePort(`:30080`) + 마스터 공인IP로 노출, 접속 확인 완료
+- [x] **앱 배포(KR2)** — NodePort(`:30080`) + 마스터 공인IP로 노출, 접속 확인 완료
 - [x] **핵심 데모 검증 완료** ⭐ — 브라우저에서 Chaos 버튼으로 실제 파드 삭제 → 진짜 kubeadm 클러스터가 새 파드를 자동 재생성하는 것까지 end-to-end 확인. 이 프로젝트의 본래 목표(Self-Healing 시각화)가 로컬 목업이 아닌 실제 자체 구축 클러스터 위에서 동작함을 증명.
+- [x] **대시보드 운영 콘솔 리디자인**(`chaos-arena:v3`) — 사이드바+멀티컬럼, 노드별 파드 토폴로지, Chart.js 차트 (2.2절)
+- [x] **NCR(비공개 레지스트리) 전환** — Docker Hub → NHN NCR(`chaosarena-registry`), `ncr-secret` 인증. content-trust 정책 이슈(412) 해결 (4.10절)
 - [ ] KR1(판교) 메모리 쿼터 확보 → `cluster_kr1` 모듈 주석 해제 → 동일 구축
-- [ ] NCR 권한 확보 시 이미지 저장소를 Docker Hub → NCR로 전환
 - [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, KR1 구축 후)
+- [ ] (선택) NCR 이미지 서명(cosign) 도입 후 content-trust 정책 재활성화
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

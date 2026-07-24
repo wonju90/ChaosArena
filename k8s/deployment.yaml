@@ -29,10 +29,10 @@ spec:
         app: chaos-demo
     spec:
       serviceAccountName: chaos-dashboard-sa
-      # Docker Hub public 이미지라 인증 불필요. NCR(비공개)로 전환 시 아래 주석을 풀고
-      # 이미지 주소를 NCR 주소로 바꾼 뒤 ncr-secret 을 생성한다.
-      # imagePullSecrets:
-      #   - name: ncr-secret
+      # NCR(비공개 레지스트리)에서 이미지를 받아오므로 인증이 필요하다.
+      # ncr-secret은 마스터 노드에서 kubectl create secret docker-registry로 미리 생성해둔다.
+      imagePullSecrets:
+        - name: ncr-secret
       # 워커 노드가 정확히 3대이므로, replica 3개가 서로 다른 노드에 하나씩
       # 배치되도록 강제한다. (대시보드의 "노드별 파드 그룹" 화면이 이 분산에 의존한다)
       affinity:
@@ -44,7 +44,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
         - name: chaos-demo
-          image: "wonju90/chaos-arena:v3" # Docker Hub public 이미지 (NCR 권한 확보 시 NCR 주소로 교체)
+          image: "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena:v3" # NCR(비공개 레지스트리)
           ports:
             - containerPort: 5000
           env:

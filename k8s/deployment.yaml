@@ -45,6 +45,9 @@ spec:
       containers:
         - name: chaos-demo
           image: "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena:v4" # NCR(비공개 레지스트리)
+          # 기본값(IfNotPresent)은 태그가 같으면 로컬 캐시를 그대로 써버려서, 태그를 안 바꾸고
+          # 재빌드/재서명해도 노드가 새 이미지를 못 본다. 매번 레지스트리에서 실제로 확인하게 강제.
+          imagePullPolicy: Always
           ports:
             - containerPort: 5000
           env:

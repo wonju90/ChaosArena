@@ -11,6 +11,9 @@ env/
 # 실제 값이 들어가는 시크릿 - k8s/secret-slack.example.yaml을 복사해서 만들 것
 k8s/secret-slack.yaml
 
+# cosign 이미지 서명 개인키 (비밀번호로 암호화돼 있어도 커밋 금지). cosign.pub(공개키)는 커밋해도 됨.
+cosign.key
+
 # Terraform 상태/변수 파일 - terraform.tfvars.example을 복사해서 만들 것
 terraform/.terraform/
 terraform/terraform.tfvars

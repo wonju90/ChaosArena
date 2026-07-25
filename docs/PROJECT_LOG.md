@@ -139,6 +139,12 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **트레이드오프**: 프로덕션이라면 정책을 켠 채 **이미지 서명(cosign 등)**을 도입하는 게 공급망 보안상 맞다. 포트폴리오에선 "정책 완화 vs 서명 도입"을 인지하고 선택한 것 자체가 의사결정 근거가 된다.
 - **알아둘 점**: 클라우드 콘솔 옵션의 한글 라벨("미인증 이미지 Pull 방지")을 액면대로 "인증 필요"로 오해하기 쉬웠다. **HTTP 상태코드(412 vs 401/403)로 "인증 문제가 아니라 정책 문제"임을 갈라낸 것**이 원인 격리의 결정적 단서였다.
 
+### 4.11 kube-prometheus-stack이 ServiceMonitor를 인식 못 함 (0개 타겟, 에러조차 없음) ⭐
+- **증상**: `ServiceMonitor`(`chaos-demo`)를 만들고 라벨/포트 이름도 Service와 맞췄는데, Prometheus 타겟 페이지에 아예 나타나지 않음. 에러 로그도 없어서 뭐가 잘못됐는지 단서가 없었음.
+- **원인**: kube-prometheus-stack Helm 차트는 기본값이 `serviceMonitorSelector: {}`(전체 선택처럼 보임)이지만, `serviceMonitorSelectorNilUsesHelmValues: true`가 **기본으로 켜져 있어** 이 `{}` 설정을 무시하고 실제로는 **`release: <helm 릴리즈 이름>` 라벨이 붙은 ServiceMonitor만** 선택하도록 강제한다. 우리 ServiceMonitor엔 이 라벨이 없어서 Prometheus 입장에선 "그런 리소스가 없는 것"과 동일하게 취급됐다(선택 안 됨 = 0개 타겟, 에러가 아니라 조용한 누락).
+- **해결**: `metadata.labels`에 `release: kube-prometheus-stack`(helm install 시 지정한 릴리즈 이름과 동일)을 추가 → 즉시 타겟으로 인식되어 3개 파드 전부 scrape 성공.
+- **알아둘 점**: 클라우드 콘솔 옵션의 "미인증 이미지 Pull 방지"(4.10)처럼, **오픈소스 Helm 차트의 "편의를 위한 기본값"도 문서를 안 읽으면 오해하기 쉽다.** `{}`라는 값만 보면 "전체 선택"이라 짐작하기 쉽지만, 그 값의 실제 처리 로직(nilUsesHelmValues 플래그)까지 봐야 진짜 동작을 알 수 있었다.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -163,8 +169,13 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **핵심 데모 검증 완료** ⭐ — 브라우저에서 Chaos 버튼으로 실제 파드 삭제 → 진짜 kubeadm 클러스터가 새 파드를 자동 재생성하는 것까지 end-to-end 확인. 이 프로젝트의 본래 목표(Self-Healing 시각화)가 로컬 목업이 아닌 실제 자체 구축 클러스터 위에서 동작함을 증명.
 - [x] **대시보드 운영 콘솔 리디자인**(`chaos-arena:v3`) — 사이드바+멀티컬럼, 노드별 파드 토폴로지, Chart.js 차트 (2.2절)
 - [x] **NCR(비공개 레지스트리) 전환** — Docker Hub → NHN NCR(`chaosarena-registry`), `ncr-secret` 인증. content-trust 정책 이슈(412) 해결 (4.10절)
-- [ ] KR1(판교) 메모리 쿼터 확보 → `cluster_kr1` 모듈 주석 해제 → 동일 구축
-- [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, KR1 구축 후)
+- [x] **KR1(판교) 최소 스펙(1마스터+1워커) 테스트 클러스터 구축 + 앱 배포** — RAM 쿼터가 빠듯해 정식 4c16 대신 `m2.c2m4`(2vCPU/4GB)로 우선 검증. `k8s/deployment-kr1-test.yaml`(replicas=1)로 별도 운용
+- [x] **Slack 알림 연동** — Incoming Webhook + k8s Secret(`slack-webhook`). 앱 코드(`send_slack_message`)는 이미 준비돼 있었고 Webhook 등록만 하면 즉시 동작
+- [x] **Prometheus + Grafana 메트릭 스택** (KR2) — kube-prometheus-stack Helm 설치, `ServiceMonitor`로 앱의 `/metrics`(`app_requests_total`/`app_errors_total`/`app_response_time_seconds`) 연동, Grafana 대시보드(`ChaosArena App Metrics`) 구성
+- [ ] KR1(판교) RAM 쿼터 확보 → `r2.c4m16`·워커 3대로 정식 재구축 → `deployment-kr1-test.yaml` → `deployment.yaml`(APP_VERSION=kr1) 전환
+- [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, 도메인 `www.chaosarena.cloud` 확보됨, NHN DNS Plus 권한 대기 중)
+- [ ] AlertManager 알림 규칙(파드 다운/CPU/에러율)
+- [ ] Jenkins CI/CD (호스팅 위치 결정 → Jenkinsfile → GitHub 웹훅 → 빌드/NCR push/배포 자동화)
 - [ ] (선택) NCR 이미지 서명(cosign) 도입 후 content-trust 정책 재활성화
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 

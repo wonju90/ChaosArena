@@ -44,7 +44,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
         - name: chaos-demo
-          image: "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena:v3" # NCR(비공개 레지스트리)
+          image: "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena:v4" # NCR(비공개 레지스트리)
           ports:
             - containerPort: 5000
           env:
@@ -58,6 +58,11 @@ spec:
               # 클러스터마다 다르게 채워서 대시보드 배지로 어느 클러스터가 응답 중인지 구분.
               # 현재 평촌 단독이므로 kr2. 멀티클러스터 확장 시 KR1은 kr1 등으로.
               value: "kr2"
+            - name: PROMETHEUS_URL
+              # kube-prometheus-stack Helm 릴리즈가 monitoring 네임스페이스에 만든 Service.
+              # KR1 같은 최소 스펙 클러스터(모니터링 스택 미설치)에는 이 env를 넣지 않는다 —
+              # app.py가 빈 값이면 자동으로 "미연동" 상태로 우아하게 처리한다.
+              value: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
             - name: SLACK_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:

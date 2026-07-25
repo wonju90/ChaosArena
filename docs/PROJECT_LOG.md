@@ -153,6 +153,14 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **디버깅 방법**: 매 단계 "될 것 같은 명령"을 실행하고 결과가 그대로면 곧바로 다음 가설로 넘어가지 않고, **helm이 실제로 받은 값(`helm get values`) → Operator가 실제로 만든 Secret 내용 → Operator 자신의 로그** 순으로 점점 더 깊은 레이어를 직접 까봤다. 특히 3단계는 로그의 정확한 에러 문구 없이는 추측으로 못 찾았을 문제였다.
 - **알아둘 점**: 클라우드 콘솔 확인 창(4.10)과 마찬가지로, **Helm 차트의 "합리적으로 보이는 기본값"을 손댈 때는 그 기본값이 다른 곳에서도 참조되고 있는지 반드시 확인해야 한다.** `receivers:`를 교체하면서 그 안의 `null` 항목이 `route.routes`에서 참조되고 있다는 걸 몰랐던 것처럼.
 
+### 4.13 NCR 이미지 서명(cosign) 도입 — 3중 장애물을 순서대로 해결 ⭐
+- **배경**: 4.10에서 임시로 꺼둔 "미인증 이미지 Pull 방지" 정책을 이번엔 실제로 이미지에 서명해서 다시 켜기로 했다(cosign, 키 기반 서명).
+- **장애물 1 — 최신 cosign(v3.1.2)이 이 NCR/Harbor의 OCI 1.1 Referrers API와 호환 안 됨**: `cosign sign`이 서명 업로드 전 `GET /v2/.../referrers/<digest>`를 조회하는데, 이 레지스트리는 그 경로 자체를 `401 UNAUTHORIZED: un-recognized request`로 응답했다. 정상적인 레지스트리라면 `404`를 반환해 cosign이 자동으로 legacy(태그 기반) 방식으로 폴백해야 하는데, 401이라 폴백 로직이 발동하지 않았다. `--registry-referrers-mode=legacy` 플래그(공식 문서에 나온 해결책)를 앞뒤 위치 다 바꿔가며 시도해도 동일 에러. **해결**: GitHub 릴리즈에서 구버전(`cosign v2.4.1`, legacy 태그 기반 서명이 기본이던 시절) 바이너리를 직접 받아 그걸로 서명 — 문제없이 통과.
+- **장애물 2 — `docker build`가 기본으로 붙이는 provenance/SBOM attestation이 이미지를 멀티 매니페스트 인덱스로 만듦**: 첫 서명 시도에서 "recursively signing" 로그와 함께 실패했는데, 원인은 최근 Docker의 기본 빌드가 이미지 매니페스트 외에 attestation 서브 매니페스트를 함께 묶어 "매니페스트 리스트"로 push하기 때문이었다(이것도 내부적으로 referrers 조회를 유발). **해결**: `docker build --provenance=false --sbom=false`로 재빌드해 순수 단일 매니페스트로 만든 뒤 서명.
+- **장애물 3 — `imagePullPolicy` 기본값(IfNotPresent) 때문에 테스트 결과를 착각할 뻔함**: 정책을 다시 켜고 파드를 재생성했는데 이벤트가 `Pulled ... already present on machine`으로 나와서 "통과했나?" 헷갈렸다. 실제로는 태그(`v4`)를 그대로 두고 이미지 내용만 다시 push했기 때문에, 워커 노드가 이전에 캐싱해둔(서명 붙이기 전) 이미지를 레지스트리 확인도 없이 그대로 재사용한 것 — 즉 정책 검증 자체가 발동을 안 한 상태였다. **해결**: `imagePullPolicy: Always`로 명시해 태그가 같아도 항상 레지스트리에서 실제로 확인하도록 강제 → 그제서야 진짜 `Pulling image` → `Successfully pulled image` 이벤트로 서명 검증 통과를 확인할 수 있었다.
+- **최종 검증**: 정책 재활성화 + `imagePullPolicy: Always` 상태에서 파드 3개 전부 `Successfully pulled image` 이벤트로 정상 기동 확인.
+- **알아둘 점**: 키 기반(`cosign sign --key`) 서명도 기본적으로 Sigstore의 공개 투명성 로그(Rekor)에 서명 메타데이터(다이제스트·공개키·서명값)를 영구 기록한다 — 이미지 내용 자체는 노출되지 않지만, 되돌릴 수 없는 공개 기록이라는 점은 인지하고 사용해야 한다.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -185,7 +193,7 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, 도메인 `www.chaosarena.cloud` 확보됨, NHN DNS Plus 권한 대기 중)
 - [x] **AlertManager 알림 규칙(파드 다운/CPU/에러율) + Slack 라우팅** — `PrometheusRule`(release 라벨 필요, 4.11 교훈 적용) + Alertmanager Slack 연동. 3단 실패(helm --reuse-values 함정 / Secret 네임스페이스 불일치 / null receiver 삭제로 인한 reconcile 전체 실패)를 로그 기반으로 하나씩 좁혀 해결 (4.12절). `ChaosDemoHighCPU` 알림이 실제로 파드명까지 템플릿 치환되어 Slack 도착 확인
 - [ ] Jenkins CI/CD (호스팅 위치 결정 → Jenkinsfile → GitHub 웹훅 → 빌드/NCR push/배포 자동화)
-- [ ] (선택) NCR 이미지 서명(cosign) 도입 후 content-trust 정책 재활성화
+- [x] **NCR 이미지 서명(cosign) 도입 + content-trust 정책 재활성화** — 3중 장애물(cosign 최신버전 호환성/attestation 매니페스트/스테일 이미지 캐시)을 순서대로 해결, 서명된 이미지가 정책 재활성화 상태에서 정상 pull됨을 실제로 검증 (4.13절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

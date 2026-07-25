@@ -145,6 +145,14 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **해결**: `metadata.labels`에 `release: kube-prometheus-stack`(helm install 시 지정한 릴리즈 이름과 동일)을 추가 → 즉시 타겟으로 인식되어 3개 파드 전부 scrape 성공.
 - **알아둘 점**: 클라우드 콘솔 옵션의 "미인증 이미지 Pull 방지"(4.10)처럼, **오픈소스 Helm 차트의 "편의를 위한 기본값"도 문서를 안 읽으면 오해하기 쉽다.** `{}`라는 값만 보면 "전체 선택"이라 짐작하기 쉽지만, 그 값의 실제 처리 로직(nilUsesHelmValues 플래그)까지 봐야 진짜 동작을 알 수 있었다.
 
+### 4.12 Alertmanager Slack 연동 3단 실패 — 레이어를 하나씩 벗겨가며 원인을 좁힌 사례 ⭐
+- **배경**: Prometheus 알림 규칙(`ChaosDemoPodDown`/`HighErrorRate`/`HighCPU`)은 정상적으로 `Firing`까지 도달했는데, Slack엔 메시지가 안 왔다. 겉보기엔 "Alertmanager가 발송을 실패한다"는 단일 증상이었지만, 실제로는 **서로 다른 layer의 문제 3개가 순서대로 숨어 있었다.**
+- **1단계 — `helm upgrade --reuse-values`가 `-f` 파일을 무시함**: `helm upgrade ... --reuse-values -f alertmanager-slack-values.yaml`을 실행하면 "upgraded" 성공 메시지가 뜨고 REVISION도 올라가지만, Alertmanager 파드는 재생성되지 않았다(AGE 그대로). `--reuse-values`는 이전 릴리즈의 값을 우선 적용하는 옵션이라, 새로 준 `-f` 파일의 내용이 실제로는 반영되지 않았다. **해결**: `--reuse-values`를 빼고, 최초 설치 때 줬던 `--set` 값(NodePort 등)을 전부 다시 명시하며 `-f`와 함께 적용.
+- **2단계 — Secret이 다른 네임스페이스에 있었음**: 위 방법으로 재적용해도 여전히 `/etc/alertmanager/secrets/slack-webhook/`가 안 생겼다. `alertmanagerSpec.secrets`는 **Alertmanager 자신과 같은 네임스페이스(`monitoring`)**에서만 Secret을 찾는데, 앱이 쓰던 `slack-webhook` Secret은 `default` 네임스페이스에 있었다. **해결**: 같은 Secret을 `monitoring` 네임스페이스에도 복사 생성.
+- **3단계 — receivers 리스트를 통째로 덮어써서 `null` receiver가 사라짐**: 위 두 개를 다 고쳐도 StatefulSet에 볼륨 자체가 안 생겼다. Prometheus Operator 로그(`kubectl logs ... prometheus-operator`)를 보고서야 정확한 원인이 드러났다: `undefined receiver "null" used in route`. kube-prometheus-stack 기본값은 내부 `Watchdog` 하트비트 알림을 무음 처리하는 `route.routes: [{receiver: "null", matchers: [alertname="Watchdog"]}]`를 갖고 있는데, Helm은 리스트(list)를 병합하지 않고 통째로 교체하기 때문에 우리가 `receivers:`를 우리 것(`slack-notifications`)만으로 덮어쓰자 `null` receiver 정의 자체가 사라졌다. `route.routes`는 우리가 안 건드려서 그대로 남아있었기 때문에 "null이라는 receiver를 쓰는데 그런 receiver가 없다"는 검증 실패로 **Operator의 reconcile 자체가 통째로 실패**했고(설정 검증 실패 → StatefulSet 업데이트도, Secret 마운트도 전혀 진행 안 됨), 그래서 1·2단계를 다 고쳐도 증상이 똑같았던 것이다. **해결**: `receivers`에 `slack-notifications`와 함께 `null` 항목도 유지.
+- **디버깅 방법**: 매 단계 "될 것 같은 명령"을 실행하고 결과가 그대로면 곧바로 다음 가설로 넘어가지 않고, **helm이 실제로 받은 값(`helm get values`) → Operator가 실제로 만든 Secret 내용 → Operator 자신의 로그** 순으로 점점 더 깊은 레이어를 직접 까봤다. 특히 3단계는 로그의 정확한 에러 문구 없이는 추측으로 못 찾았을 문제였다.
+- **알아둘 점**: 클라우드 콘솔 확인 창(4.10)과 마찬가지로, **Helm 차트의 "합리적으로 보이는 기본값"을 손댈 때는 그 기본값이 다른 곳에서도 참조되고 있는지 반드시 확인해야 한다.** `receivers:`를 교체하면서 그 안의 `null` 항목이 `route.routes`에서 참조되고 있다는 걸 몰랐던 것처럼.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -175,7 +183,7 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **자체 대시보드 ↔ Prometheus 직접 연동** — Grafana를 iframe으로 끼워넣는 대신, Flask 앱이 Prometheus HTTP API(`/api/v1/query`)를 직접 호출해 `sum(rate(...))`로 파드 전체 합산 지표를 계산하는 `/api/metrics/cluster`를 추가. 기존 `/api/status`(응답한 파드 1대의 로컬 값이라 폴링마다 들쭉날쭉)와 대비되는 "클러스터 전체 기준" 지표를 같은 디자인 시스템 안에서 보여줌. `PROMETHEUS_URL` 미설정 시(KR1 등) 자동으로 "미연동" 표시로 우아하게 저하
 - [ ] KR1(판교) RAM 쿼터 확보 → `r2.c4m16`·워커 3대로 정식 재구축 → `deployment-kr1-test.yaml` → `deployment.yaml`(APP_VERSION=kr1) 전환
 - [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, 도메인 `www.chaosarena.cloud` 확보됨, NHN DNS Plus 권한 대기 중)
-- [ ] AlertManager 알림 규칙(파드 다운/CPU/에러율)
+- [x] **AlertManager 알림 규칙(파드 다운/CPU/에러율) + Slack 라우팅** — `PrometheusRule`(release 라벨 필요, 4.11 교훈 적용) + Alertmanager Slack 연동. 3단 실패(helm --reuse-values 함정 / Secret 네임스페이스 불일치 / null receiver 삭제로 인한 reconcile 전체 실패)를 로그 기반으로 하나씩 좁혀 해결 (4.12절). `ChaosDemoHighCPU` 알림이 실제로 파드명까지 템플릿 치환되어 Slack 도착 확인
 - [ ] Jenkins CI/CD (호스팅 위치 결정 → Jenkinsfile → GitHub 웹훅 → 빌드/NCR push/배포 자동화)
 - [ ] (선택) NCR 이미지 서명(cosign) 도입 후 content-trust 정책 재활성화
 - [ ] 마무리: main 병합, README, requirements 버전 고정

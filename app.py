@@ -137,6 +137,31 @@ REQUEST_COUNT = Counter("app_requests_total", "총 요청 수")
 ERROR_COUNT = Counter("app_errors_total", "총 에러(5xx) 수")
 RESPONSE_TIME = Histogram("app_response_time_seconds", "응답 시간(초)")
 
+# Prometheus 서버 주소 (클러스터 내부 Service DNS). 설치 안 된 클러스터(KR1 테스트 등)나
+# 로컬 개발 중에는 빈 값으로 둬서 아래 query_prometheus_instant()가 조용히 스킵하게 한다.
+PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "")
+
+
+def query_prometheus_instant(promql):
+    """
+    Prometheus HTTP API(/api/v1/query)로 즉시값(instant vector) 쿼리 하나를 날린다.
+    이 앱 자신의 로컬 메모리 집계(metrics_state)는 "요청을 받은 그 파드 하나"의 값이라
+    폴링할 때마다 다른 파드가 응답하면 값이 들쭉날쭉하지만, Prometheus는 모든 파드의
+    /metrics를 각각 긁어와 합산하므로 "클러스터 전체" 기준의 정확한 값을 준다.
+    실패하거나 미설정이면 None을 반환하고, 호출부에서 이를 "연동 안 됨"으로 처리한다.
+    """
+    if not PROMETHEUS_URL:
+        return None
+    try:
+        resp = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query", params={"query": promql}, timeout=3
+        )
+        result = resp.json()["data"]["result"]
+        return float(result[0]["value"][1]) if result else 0.0
+    except (requests.RequestException, KeyError, IndexError, ValueError) as e:
+        print(f"Prometheus 쿼리 실패: {e}")
+        return None
+
 
 # ---------------------------------------------------------------------------
 # 4. 쿠버네티스 API 헬퍼 함수 (LOCAL_MODE가 false일 때만 실제로 쓰인다)
@@ -359,6 +384,32 @@ def api_status():
             "response_time_history": response_time_history,
             "cpu_load": chaos_state["cpu_load"],
             "error_mode": chaos_state["error_mode"],
+        }
+    )
+
+
+@app.route("/api/metrics/cluster")
+def api_metrics_cluster():
+    """
+    Prometheus 기준 "클러스터 전체" 지표. api_status()의 값은 응답한 파드 하나의
+    로컬 메모리 기준이라 폴링마다 들쭉날쭉할 수 있는데, 여기는 sum(rate(...))로
+    모든 파드를 합산한 값이라 어느 파드가 응답했는지와 무관하게 항상 같은 값이 나온다.
+    """
+    req_rate = query_prometheus_instant("sum(rate(app_requests_total[1m]))")
+    err_pct = query_prometheus_instant(
+        "sum(rate(app_errors_total[1m])) / sum(rate(app_requests_total[1m])) * 100"
+    )
+    avg_ms = query_prometheus_instant(
+        "sum(rate(app_response_time_seconds_sum[1m]))"
+        " / sum(rate(app_response_time_seconds_count[1m])) * 1000"
+    )
+
+    return jsonify(
+        {
+            "available": req_rate is not None,
+            "cluster_request_rate": round(req_rate, 2) if req_rate is not None else None,
+            "cluster_error_rate_percent": round(err_pct, 2) if err_pct is not None else None,
+            "cluster_avg_response_ms": round(avg_ms, 1) if avg_ms is not None else None,
         }
     )
 

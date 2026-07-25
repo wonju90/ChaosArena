@@ -27,6 +27,14 @@
     border: 1px solid rgba(148,163,184,0.18); background: rgba(30,41,59,0.5); color: #cbd5e1;
     font-variant-numeric: tabular-nums;
   }
+
+  .prom-badge {
+    font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .prom-badge-on { background: rgba(20,83,45,0.4); color: #4ade80; }
+  .prom-badge-off { background: rgba(51,65,85,0.5); color: #94a3b8; }
+  .prom-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 {% endblock %}
 
 {% block content %}
@@ -64,6 +72,32 @@
       <span class="text-[11px] uppercase tracking-wider text-faint">Phase</span>
       <div id="phase-chips" class="flex flex-wrap gap-2"></div>
     </div>
+  </div>
+
+  <!-- Prometheus 클러스터 전체 지표 -->
+  <div class="panel">
+    <div class="mb-3 flex items-center justify-between">
+      <h2 class="panel-title" style="margin:0;">{{ ic.i('activity') }} 클러스터 전체 지표 <span class="text-faint normal-case tracking-normal">· Prometheus 집계</span></h2>
+      <span id="prom-status-badge" class="prom-badge prom-badge-off"><span class="prom-badge-dot"></span>확인 중…</span>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-tile stat-accent-blue">
+        <div class="stat-icon">📡</div>
+        <div class="stat-value"><span id="prom-req-rate">-</span><span class="text-lg">/s</span></div>
+        <div class="stat-label">전체 파드 합산 요청률</div>
+      </div>
+      <div class="stat-tile stat-accent-red">
+        <div class="stat-icon">⚠️</div>
+        <div class="stat-value"><span id="prom-error-rate">-</span><span class="text-lg">%</span></div>
+        <div class="stat-label">전체 파드 합산 에러율</div>
+      </div>
+      <div class="stat-tile stat-accent-orange">
+        <div class="stat-icon">⏱️</div>
+        <div class="stat-value"><span id="prom-latency">-</span><span class="text-lg">ms</span></div>
+        <div class="stat-label">전체 파드 합산 응답시간</div>
+      </div>
+    </div>
+    <p class="mt-3 text-[11px] text-faint">위 KPI(맨 위)는 응답한 파드 1대의 로컬 값이라 폴링마다 들쭉날쭉할 수 있지만, 이 패널은 Prometheus가 모든 파드의 <code>/metrics</code>를 합산한 값이라 항상 클러스터 전체 기준입니다.</p>
   </div>
 
   <!-- 차트 2열 -->
@@ -263,9 +297,36 @@ async function refreshPods() {
   } catch (e) { textEl.innerText = '⚠ 파드 정보를 불러오지 못했습니다.'; }
 }
 
+// Prometheus 클러스터 전체 지표: 5초마다 갱신
+async function refreshClusterMetrics() {
+  const badge = document.getElementById('prom-status-badge');
+  try {
+    const res = await fetch('/api/metrics/cluster');
+    const data = await res.json();
+    if (!data.available) {
+      badge.className = 'prom-badge prom-badge-off';
+      badge.innerHTML = '<span class="prom-badge-dot"></span>Prometheus 미연동';
+      document.getElementById('prom-req-rate').innerText = '-';
+      document.getElementById('prom-error-rate').innerText = '-';
+      document.getElementById('prom-latency').innerText = '-';
+      return;
+    }
+    badge.className = 'prom-badge prom-badge-on';
+    badge.innerHTML = '<span class="prom-badge-dot"></span>연동됨';
+    document.getElementById('prom-req-rate').innerText = data.cluster_request_rate;
+    document.getElementById('prom-error-rate').innerText = data.cluster_error_rate_percent;
+    document.getElementById('prom-latency').innerText = data.cluster_avg_response_ms;
+  } catch (e) {
+    badge.className = 'prom-badge prom-badge-off';
+    badge.innerHTML = '<span class="prom-badge-dot"></span>조회 실패';
+  }
+}
+
 setInterval(refreshStatus, 2000);
 setInterval(refreshPods, 3000);
+setInterval(refreshClusterMetrics, 5000);
 refreshStatus();
 refreshPods();
+refreshClusterMetrics();
 </script>
 {% endblock %}

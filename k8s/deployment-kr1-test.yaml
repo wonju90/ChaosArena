@@ -1,0 +1,72 @@
+# ---------------------------------------------------------------------------
+# KR1(판교) 최소 스펙 테스트 클러스터(마스터1+워커1)용 Deployment.
+# 정식 deployment.yaml(워커 3대 전제, replicas=3)과 달리 워커가 1대뿐이라 replicas=1로 축소.
+# 목적은 "노드 분산 시각화" 데모가 아니라 멀티클러스터+GSLB 파이프라인 자체의 동작 검증.
+# 쿼터 확보 후 4c16/워커3대로 재구축하면 이 파일 대신 deployment.yaml(APP_VERSION=kr1)을 쓴다.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-demo
+  namespace: default
+  labels:
+    app: chaos-demo
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: chaos-demo
+  template:
+    metadata:
+      labels:
+        app: chaos-demo
+    spec:
+      serviceAccountName: chaos-dashboard-sa
+      # ncr-secret은 클러스터마다 별도로 생성해야 한다 (Secret은 클러스터 간 공유되지 않음).
+      imagePullSecrets:
+        - name: ncr-secret
+      containers:
+        - name: chaos-demo
+          image: "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena:v3"
+          ports:
+            - containerPort: 5000
+          env:
+            - name: LOCAL_MODE
+              value: "false"
+            - name: K8S_NAMESPACE
+              value: "default"
+            - name: EXPECTED_REPLICAS
+              value: "1"
+            - name: APP_VERSION
+              # 판교 최소 스펙 테스트 클러스터임을 대시보드 배지로 구분.
+              value: "kr1-test"
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: slack-webhook
+                  key: url
+                  optional: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 3
+            periodSeconds: 5

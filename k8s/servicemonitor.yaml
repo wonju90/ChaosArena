@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+# kube-prometheus-stack이 설치하는 Prometheus Operator의 CRD.
+# "Service(chaos-demo-nodeport)를 찾아서, 그 Service가 가리키는 파드들의 /metrics를
+# 주기적으로 긁어와라"는 지시서. kube-prometheus-stack 설치 후에만 이 CRD가 존재한다.
+#
+# 적용 방법: kubectl apply -f k8s/servicemonitor.yaml
+# (monitoring 네임스페이스가 아니라 앱과 같은 default에 둬도 된다 — Prometheus CR의
+#  serviceMonitorNamespaceSelector가 기본값(전체 네임스페이스 선택)이면 문제없이 인식됨.
+#  설치 후 잡히지 않으면 `kubectl get prometheus -n monitoring -o yaml`로
+#  serviceMonitorSelector/serviceMonitorNamespaceSelector 값을 확인할 것)
+# ---------------------------------------------------------------------------
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: chaos-demo
+  namespace: default
+  labels:
+    app: chaos-demo
+spec:
+  selector:
+    matchLabels:
+      app: chaos-demo
+  endpoints:
+    - port: http       # service-nodeport.yaml의 ports[].name과 일치해야 함
+      path: /metrics
+      interval: 15s

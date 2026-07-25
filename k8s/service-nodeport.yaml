@@ -5,12 +5,17 @@ kind: Service
 metadata:
   name: chaos-demo-nodeport
   namespace: default
+  # Prometheus ServiceMonitor가 이 Service를 찾을 때 쓰는 라벨 (k8s/servicemonitor.yaml 참고)
+  labels:
+    app: chaos-demo
 spec:
   type: NodePort
   selector:
     app: chaos-demo
   ports:
-    - port: 80
+    # ServiceMonitor는 포트를 번호가 아니라 이름으로 참조하므로 name이 필요하다.
+    - name: http
+      port: 80
       targetPort: 5000
       nodePort: 30080
       protocol: TCP

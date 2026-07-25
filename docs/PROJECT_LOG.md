@@ -172,6 +172,7 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **KR1(판교) 최소 스펙(1마스터+1워커) 테스트 클러스터 구축 + 앱 배포** — RAM 쿼터가 빠듯해 정식 4c16 대신 `m2.c2m4`(2vCPU/4GB)로 우선 검증. `k8s/deployment-kr1-test.yaml`(replicas=1)로 별도 운용
 - [x] **Slack 알림 연동** — Incoming Webhook + k8s Secret(`slack-webhook`). 앱 코드(`send_slack_message`)는 이미 준비돼 있었고 Webhook 등록만 하면 즉시 동작
 - [x] **Prometheus + Grafana 메트릭 스택** (KR2) — kube-prometheus-stack Helm 설치, `ServiceMonitor`로 앱의 `/metrics`(`app_requests_total`/`app_errors_total`/`app_response_time_seconds`) 연동, Grafana 대시보드(`ChaosArena App Metrics`) 구성
+- [x] **자체 대시보드 ↔ Prometheus 직접 연동** — Grafana를 iframe으로 끼워넣는 대신, Flask 앱이 Prometheus HTTP API(`/api/v1/query`)를 직접 호출해 `sum(rate(...))`로 파드 전체 합산 지표를 계산하는 `/api/metrics/cluster`를 추가. 기존 `/api/status`(응답한 파드 1대의 로컬 값이라 폴링마다 들쭉날쭉)와 대비되는 "클러스터 전체 기준" 지표를 같은 디자인 시스템 안에서 보여줌. `PROMETHEUS_URL` 미설정 시(KR1 등) 자동으로 "미연동" 표시로 우아하게 저하
 - [ ] KR1(판교) RAM 쿼터 확보 → `r2.c4m16`·워커 3대로 정식 재구축 → `deployment-kr1-test.yaml` → `deployment.yaml`(APP_VERSION=kr1) 전환
 - [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, 도메인 `www.chaosarena.cloud` 확보됨, NHN DNS Plus 권한 대기 중)
 - [ ] AlertManager 알림 규칙(파드 다운/CPU/에러율)

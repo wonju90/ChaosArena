@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# kube-prometheus-stack Helm 릴리즈에 Slack 알림 설정을 추가하는 values 파일.
+# 앱(app.py)이 쓰던 것과 동일한 k8s Secret(slack-webhook)을 재사용한다 — Webhook
+# URL을 여기에 평문으로 다시 적지 않기 위해, Alertmanager 파드에 그 Secret을
+# 파일로 마운트해서 읽게 한다(api_url_file).
+#
+# 적용 방법 (기존 --set으로 넣었던 NodePort 설정 등은 --reuse-values로 보존):
+#   helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring --reuse-values -f k8s/alertmanager-slack-values.yaml
+# ---------------------------------------------------------------------------
+alertmanager:
+  alertmanagerSpec:
+    # slack-webhook Secret을 /etc/alertmanager/secrets/slack-webhook/ 아래에 마운트
+    secrets:
+      - slack-webhook
+
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: slack-notifications
+      group_by: ["alertname"]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+    receivers:
+      - name: slack-notifications
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/slack-webhook/url
+            channel: "#chaosarena-전체"
+            send_resolved: true
+            title: "{{ .CommonLabels.alertname }}"
+            text: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"

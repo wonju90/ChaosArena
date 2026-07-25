@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# Prometheus Operator의 PrometheusRule CRD. Prometheus가 주기적으로 이 규칙들을
+# 평가하다가 조건이 계속 참이면 Alertmanager로 알림을 보낸다.
+#
+# 주의: kube-prometheus-stack은 기본적으로 "release: <helm 릴리즈 이름>" 라벨이 붙은
+# PrometheusRule만 선택한다(ServiceMonitor와 동일한 함정 — PROJECT_LOG.md 4.11 참고).
+# 그래서 release 라벨이 반드시 필요하다.
+#
+# 파드 다운 알림의 for: 45s는 의도적으로 길게 잡았다. 이 앱은 "일부러 파드를 죽이는
+# 게임"이라 랭크 임계값(S=5s/A=10s/B=20s)보다 짧게 잡으면 정상적인 게임 플레이마다
+# 알림이 울린다. 45초는 최악(C랭크)의 자가치유 시간보다도 길게 잡아, "정상적인 복구
+# 지연"과 "진짜 멈춰버린 장애"를 구분하기 위한 값이다.
+#
+# 적용 방법: kubectl apply -f k8s/prometheusrule.yaml
+# ---------------------------------------------------------------------------
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: chaos-demo-alerts
+  namespace: default
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: chaos-demo.rules
+      rules:
+        - alert: ChaosDemoPodDown
+          expr: >
+            kube_deployment_status_replicas_available{deployment="chaos-demo", namespace="default"}
+            < kube_deployment_spec_replicas{deployment="chaos-demo", namespace="default"}
+          for: 45s
+          labels:
+            severity: warning
+          annotations:
+            summary: "chaos-demo 파드가 45초 넘게 예상보다 적게 떠 있습니다 (자가치유가 아니라 실제 장애 가능성)"
+
+        - alert: ChaosDemoHighErrorRate
+          expr: >
+            sum(rate(app_errors_total[1m])) / sum(rate(app_requests_total[1m])) * 100 > 20
+          for: 30s
+          labels:
+            severity: warning
+          annotations:
+            summary: "chaos-demo 에러율이 20%를 30초 넘게 초과했습니다"
+
+        - alert: ChaosDemoHighCPU
+          expr: >
+            sum(rate(container_cpu_usage_seconds_total{namespace="default", pod=~"chaos-demo-.*", container="chaos-demo"}[1m])) by (pod) > 0.4
+          for: 30s
+          labels:
+            severity: warning
+          annotations:
+            summary: "파드 {{ $labels.pod }}의 CPU 사용량이 30초 넘게 limit(500m)의 80% 이상입니다"

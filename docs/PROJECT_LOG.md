@@ -179,6 +179,14 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **최종 검증**: 정책 재활성화 + `imagePullPolicy: Always` 상태에서 파드 3개 전부 `Successfully pulled image` 이벤트로 정상 기동 확인.
 - **알아둘 점**: 키 기반(`cosign sign --key`) 서명도 기본적으로 Sigstore의 공개 투명성 로그(Rekor)에 서명 메타데이터(다이제스트·공개키·서명값)를 영구 기록한다 — 이미지 내용 자체는 노출되지 않지만, 되돌릴 수 없는 공개 기록이라는 점은 인지하고 사용해야 한다.
 
+### 4.14 Jenkins CI/CD 첫 end-to-end 실행 — 컨테이너 이미지 4중 장애물 ⭐
+- **배경**: Jenkinsfile(Kaniko 빌드 → cosign 서명 → kubectl 배포)을 처음 push해서 실제로 돌려보는 과정에서, 파이프라인의 각 스테이지마다 서로 다른 이유로 4번 연속 실패했다. 매번 "그럴듯해 보이는 설정"이 실제 환경에서는 안 맞았던 사례들이라, 로그를 하나씩 읽어가며 원인을 좁혔다.
+- **장애물 1 — `bitnami/kubectl:1.33` 태그가 존재하지 않음(`ErrImagePull`)**: Bitnami가 2025년 이미지 카탈로그를 개편하면서, 짧은 버전 태그(`1.33`) 같은 예전 무료 이미지 태그들을 `bitnamilegacy` 네임스페이스의 전체 버전 태그(예: `1.33.4-debian-12-r0`)로 옮겼다. Docker Hub API로 실제 존재하는 태그를 직접 조회해 확인 후 교체. **알아둘 점**: 유명 베이스 이미지라도 "짧은 태그가 항상 존재한다"고 가정하면 안 되고, 특히 Bitnami처럼 최근 카탈로그 정책이 바뀐 벤더는 실제 레지스트리 API로 태그 존재 여부를 확인해야 한다.
+- **장애물 2 — non-root 컨테이너에서 Jenkins 셸 실행 자체가 실패**(`process apparently never started`): cosign 스테이지(`curlimages/curl`)와 kubectl 스테이지(`bitnamilegacy/kubectl`) 둘 다 같은 에러로 실패했다. 두 이미지 모두 컨테이너를 **non-root 사용자로 기본 실행**하는데, Jenkins Kubernetes 플러그인은 실행할 스크립트를 워크스페이스(공유 볼륨)에 쓰고 그 컨테이너 안에서 실행시키는 방식이라, 그 사용자가 워크스페이스에 쓸 권한이 없으면 스크립트 자체가 시작을 못 한다. **해결**: cosign 스테이지는 기본이 root인 `alpine` 이미지로 교체, kubectl 스테이지는 검증된 이미지를 유지한 채 `securityContext.runAsUser: 0`으로 root 강제.
+- **장애물 3 — cosign 서명 시 `decrypt: encrypted: decryption failed`**: 이미지 빌드/push는 성공했는데 서명 단계에서 매번 실패했다. 처음엔 "Jenkins 시크릿이 잘못 전달되나?"로 의심했지만, 로컬에서 `cosign public-key --key cosign.key`로 같은 비밀번호를 직접 넣어보니 **로컬에서도 복호화가 실패**해 원인이 Jenkins/K8s가 아니라 **`cosign-key` 시크릿을 만들 때 비밀번호 자체를 잘못 입력**했던 것으로 좁혀졌다. 정확한 비밀번호를 다시 확인(`cosign public-key`의 출력이 `cosign.pub`과 바이트 단위로 일치하는지 대조)한 뒤 시크릿을 재생성해 해결. **알아둘 점**: 서명 비밀번호처럼 "맞는지 틀린지 결과로만 알 수 있는" 값은, 실패 시 그 값을 전달하는 파이프라인(Jenkins→K8s Secret)부터 의심하기 쉽지만, **가장 바깥쪽 레이어(로컬에서 같은 값으로 재현)부터 검증**하는 게 더 빠르게 원인을 좁힌다.
+- **장애물 4(경미) — RBAC에 `watch` 누락으로 배포 단계 로그 스팸**: 파이프라인 자체는 성공했지만, `kubectl rollout status`가 내부적으로 Deployment를 `watch`하려다 권한이 없어 매 폴링마다 `Failed to watch ... forbidden` 에러를 로그에 남겼다(동작 자체는 폴링으로 대체되어 실패하지 않음). `jenkins-deploy-rbac.yaml`의 Role에 `watch` verb를 추가해 깨끗하게 해결.
+- **최종 검증**: push → GitHub Webhook → Kaniko 빌드+push(`chaos-arena:jenkins-N`) → cosign 서명(Rekor 기록) → `kubectl set image`+`rollout status` → KR2 파드 3개 전부 새 이미지로 교체 확인. `curl`로 앱 응답(200) 확인까지 사람 개입 없이 자동 완료.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -210,20 +218,12 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [ ] KR1(판교) RAM 쿼터 확보 → `r2.c4m16`·워커 3대로 정식 재구축 → `deployment-kr1-test.yaml` → `deployment.yaml`(APP_VERSION=kr1) 전환
 - [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, 도메인 `www.chaosarena.cloud` 확보됨, NHN DNS Plus 권한 대기 중)
 - [x] **AlertManager 알림 규칙(파드 다운/CPU/에러율) + Slack 라우팅** — `PrometheusRule`(release 라벨 필요, 4.11 교훈 적용) + Alertmanager Slack 연동. 3단 실패(helm --reuse-values 함정 / Secret 네임스페이스 불일치 / null receiver 삭제로 인한 reconcile 전체 실패)를 로그 기반으로 하나씩 좁혀 해결 (4.12절). `ChaosDemoHighCPU` 알림이 실제로 파드명까지 템플릿 치환되어 Slack 도착 확인
-- [ ] **Jenkins CI/CD** — 호스팅 위치를 KR2 클러스터 내부(Pod)로 결정(3.5절). 착수해 아래까지 진행,
-  나머지는 다음 세션에서 이어감.
-  - [x] 호스팅 위치 결정 + 제약사항(StorageClass 없음/containerd/NodePort 개방) 파악
-  - [x] `jenkins` 네임스페이스 생성 (KR2)
-  - [x] `ncr-secret`을 `default` → `jenkins` 네임스페이스로 복사
-  - [ ] `cosign-key` 시크릿 생성 — `cosign.key`는 `kr2-master:/tmp/cosign.key`에 올려둔 상태.
-        비밀번호는 대화 로그에 남기지 않기 위해 **직접 SSH 접속 후 `kubectl create secret generic cosign-key -n jenkins ...`를
-        본인이 실행**해야 함 (커맨드는 이전 대화 참고). 완료 후 `/tmp/cosign.key` 삭제할 것.
-  - [ ] hostPath 기반 수동 PV로 영속 스토리지 구성
-  - [ ] Helm으로 Jenkins 설치 (`k8s/jenkins-values.yaml`, NodePort 노출)
-  - [ ] 배포용 RBAC(`jenkins-deployer`) 작성
-  - [ ] Jenkins 초기 설정 + GitHub 웹훅 + Pipeline Job 생성 (트리거 브랜치: `infra/k8s-setup`)
-  - [ ] Jenkinsfile 작성 (Kaniko 빌드+push → cosign 서명 → kubectl 배포까지 완전 자동화, 수동 개입 없음)
-  - [ ] End-to-end 검증 (push → 빌드 → 서명 → KR2 배포 → 브라우저 확인)
+- [x] **Jenkins CI/CD** ⭐ — KR2 클러스터 내부(Pod)에 Helm으로 설치(hostPath PV로 영속화), `jenkins-deployer` RBAC,
+  GitHub Webhook + Pipeline Job(`infra/k8s-setup` 브랜치), Jenkinsfile(Kaniko 빌드+push → cosign 서명 → kubectl
+  배포)까지 전부 구성해 **push 한 번으로 빌드→서명→KR2 배포가 완전 자동으로 도는 것을 실제로 검증**했다.
+  4가지 장애물(Bitnami 태그 소실/non-root 셸 실행 실패/cosign 비밀번호 오타/RBAC watch 누락)을 로그 기반으로
+  하나씩 해결 (4.14절). 이미지 태그를 `jenkins-${BUILD_NUMBER}`로 매 빌드 고유하게 부여해 어떤 빌드가
+  배포됐는지 추적 가능. 1단계로 **KR2 전용**(KR1 확장은 3.5절 트레이드오프 참고).
 - [x] **NCR 이미지 서명(cosign) 도입 + content-trust 정책 재활성화** — 3중 장애물(cosign 최신버전 호환성/attestation 매니페스트/스테일 이미지 캐시)을 순서대로 해결, 서명된 이미지가 정책 재활성화 상태에서 정상 pull됨을 실제로 검증 (4.13절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 

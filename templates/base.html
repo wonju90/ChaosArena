@@ -122,21 +122,42 @@
   }
   .deploy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-  /* 배포 시그니처 글로우: Chaos 이벤트 토스트(주황/빨강, "장애" 톤)와 색을 확실히 구분해서,
-     화면 테두리에 시안/골드 빛이 잠깐 번쩍이는 걸로 "이건 장애가 아니라 자동배포"라는 걸
-     한눈에 구분되게 한다. 레이아웃은 안 건드리고 fixed 오버레이로만 존재. */
+  /* 배포 시그니처 효과: Chaos 이벤트 토스트(주황/빨강, "장애" 톤)와 색을 확실히 구분해서,
+     화면 전체가 시안 톤으로 확 물드는 걸로 "이건 장애가 아니라 자동배포"라는 걸 한눈에
+     구분되게 한다. 테두리 글로우만으로는 눈에 잘 안 띄어서(1차 시도, 실측 후 폐기),
+     전체 배경 틴트 + 중앙 대형 배너 텍스트로 강도를 확실히 올렸다.
+     레이아웃 구조는 안 건드리고 fixed 오버레이로만 존재(pointer-events: none, 클릭 안 막음). */
   .deploy-glow {
     position: fixed; inset: 0; pointer-events: none; z-index: 75;
-    box-shadow: inset 0 0 0 10px rgba(56,189,248,0.95), inset 0 0 220px rgba(56,189,248,0.5);
-    background: rgba(56,189,248,0.07);
+    background: rgba(56,189,248,0.22);
     opacity: 0;
   }
-  .deploy-glow.show { animation: deploy-glow-pulse 2.4s ease-out; }
+  .deploy-glow.show { animation: deploy-glow-pulse 2.6s ease-out; }
   @keyframes deploy-glow-pulse {
     0%   { opacity: 0; }
-    8%   { opacity: 1; }
-    35%  { opacity: 0.4; }
-    55%  { opacity: 1; }
+    10%  { opacity: 1; }
+    30%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  /* 화면 중앙에 잠깐 떴다 사라지는 대형 배너 (game.html의 rank-pop 연출과 같은 급) */
+  .deploy-banner {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%) scale(0.6);
+    z-index: 90; pointer-events: none; text-align: center;
+    opacity: 0;
+  }
+  .deploy-banner .deploy-banner-icon { font-size: 72px; line-height: 1; text-shadow: 0 0 60px rgba(56,189,248,0.9); }
+  .deploy-banner .deploy-banner-text {
+    margin-top: 10px; font-size: 30px; font-weight: 900; color: #f1f5f9;
+    text-shadow: 0 4px 24px rgba(0,0,0,0.6);
+  }
+  .deploy-banner.show { animation: deploy-banner-pop 2.6s ease-out; }
+  @keyframes deploy-banner-pop {
+    0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+    12%  { opacity: 1; transform: translate(-50%, -50%) scale(1.08); }
+    22%  { transform: translate(-50%, -50%) scale(1); }
+    75%  { opacity: 1; }
     100% { opacity: 0; }
   }
 
@@ -185,6 +206,10 @@
 
   <div id="deploy-toast" class="deploy-toast"></div>
   <div id="deploy-glow" class="deploy-glow"></div>
+  <div id="deploy-banner" class="deploy-banner">
+    <div class="deploy-banner-icon">🚀</div>
+    <div id="deploy-banner-text" class="deploy-banner-text">배포 완료</div>
+  </div>
 
   <!-- ── 메인 영역 ────────────────────────────────────────── -->
   <main class="flex-1 min-w-0 flex flex-col">
@@ -273,20 +298,25 @@ refreshMissionNavBadge();
 // 폴링만으로 감지하므로, 어느 페이지를 보고 있어도 배포 순간을 놓치지 않는다.
 let lastSeenBuildNumber = null;
 let deployToastTimer = null;
-function showDeployToast(text) {
+function showDeployToast(text, buildNumber) {
   const el = document.getElementById('deploy-toast');
   el.innerText = text;
   el.classList.add('show');
   clearTimeout(deployToastTimer);
   deployToastTimer = setTimeout(() => el.classList.remove('show'), 4000);
 
-  // 화면 테두리 글로우를 같은 순간에 같이 터뜨린다. Chaos 이벤트 토스트와 색을 다르게 해서
+  // 화면 전체 틴트 + 중앙 배너를 같은 순간에 같이 터뜨린다. Chaos 이벤트 토스트와 색을 다르게 해서
   // "장애 알림"과 "배포 알림"이 한눈에 구분되게 하는 게 핵심이라, 애니메이션을 재시작할 때는
   // 클래스를 뺐다 다시 넣어야 한다(그냥 다시 add만 하면 이미 재생 중인 CSS 애니메이션은 무시됨).
-  const glow = document.getElementById('deploy-glow');
-  glow.classList.remove('show');
-  void glow.offsetWidth; // 강제 reflow로 애니메이션 재시작
-  glow.classList.add('show');
+  [
+    document.getElementById('deploy-glow'),
+    document.getElementById('deploy-banner'),
+  ].forEach(el => {
+    el.classList.remove('show');
+    void el.offsetWidth; // 강제 reflow로 애니메이션 재시작
+    el.classList.add('show');
+  });
+  document.getElementById('deploy-banner-text').innerText = `배포 완료 · 빌드 #${buildNumber}`;
 }
 async function refreshDeployInfo() {
   try {
@@ -298,7 +328,7 @@ async function refreshDeployInfo() {
       badge.classList.remove('hidden');
       // 첫 폴링(lastSeenBuildNumber === null)은 "새로 배포됨"이 아니라 "페이지를 새로 연 것"이므로 토스트를 안 띄운다.
       if (lastSeenBuildNumber !== null && data.build_number !== lastSeenBuildNumber) {
-        showDeployToast(`🚀 새 버전이 배포되었습니다 (빌드 #${data.build_number})`);
+        showDeployToast(`🚀 새 버전이 배포되었습니다 (빌드 #${data.build_number})`, data.build_number);
       }
       lastSeenBuildNumber = data.build_number;
     }

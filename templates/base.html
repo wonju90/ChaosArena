@@ -122,6 +122,24 @@
   }
   .deploy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+  /* 배포 시그니처 글로우: Chaos 이벤트 토스트(주황/빨강, "장애" 톤)와 색을 확실히 구분해서,
+     화면 테두리에 시안/골드 빛이 잠깐 번쩍이는 걸로 "이건 장애가 아니라 자동배포"라는 걸
+     한눈에 구분되게 한다. 레이아웃은 안 건드리고 fixed 오버레이로만 존재. */
+  .deploy-glow {
+    position: fixed; inset: 0; pointer-events: none; z-index: 75;
+    box-shadow: inset 0 0 0 10px rgba(56,189,248,0.95), inset 0 0 220px rgba(56,189,248,0.5);
+    background: rgba(56,189,248,0.07);
+    opacity: 0;
+  }
+  .deploy-glow.show { animation: deploy-glow-pulse 2.4s ease-out; }
+  @keyframes deploy-glow-pulse {
+    0%   { opacity: 0; }
+    8%   { opacity: 1; }
+    35%  { opacity: 0.4; }
+    55%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
   {% block extra_style %}{% endblock %}
 </style>
 </head>
@@ -166,6 +184,7 @@
   </aside>
 
   <div id="deploy-toast" class="deploy-toast"></div>
+  <div id="deploy-glow" class="deploy-glow"></div>
 
   <!-- ── 메인 영역 ────────────────────────────────────────── -->
   <main class="flex-1 min-w-0 flex flex-col">
@@ -260,6 +279,14 @@ function showDeployToast(text) {
   el.classList.add('show');
   clearTimeout(deployToastTimer);
   deployToastTimer = setTimeout(() => el.classList.remove('show'), 4000);
+
+  // 화면 테두리 글로우를 같은 순간에 같이 터뜨린다. Chaos 이벤트 토스트와 색을 다르게 해서
+  // "장애 알림"과 "배포 알림"이 한눈에 구분되게 하는 게 핵심이라, 애니메이션을 재시작할 때는
+  // 클래스를 뺐다 다시 넣어야 한다(그냥 다시 add만 하면 이미 재생 중인 CSS 애니메이션은 무시됨).
+  const glow = document.getElementById('deploy-glow');
+  glow.classList.remove('show');
+  void glow.offsetWidth; // 강제 reflow로 애니메이션 재시작
+  glow.classList.add('show');
 }
 async function refreshDeployInfo() {
   try {

@@ -270,7 +270,7 @@ Prometheus에 직접 질의해 클러스터 전체 합산 지표를 자체 대�
 
 ---
 
-## 11. CI/CD — Jenkins (진행 중)
+## 11. CI/CD — Jenkins
 
 ### 11.1 지금까지 손으로 하던 일
 
@@ -316,6 +316,69 @@ Jenkins는 이걸 받으면 파이프라인을 즉시 시작한다.
 🎤 **발표 한 줄**: "지금까지 손으로 하던 빌드→서명→배포 5단계를, GitHub에 push만 하면 자동으로 굴러가게
 Jenkins로 자동화했습니다 — 장애 자가치유에 더해 '배포 자동화'까지 보여주는 부분입니다."
 
+### 11.5 실제로 어떻게 구성했나 — 파일 지도 + 파드 해부
+
+개념만 알면 "그래서 실제로 뭘 만든 거지?"가 안 그려질 수 있다. 이 프로젝트에서 만든 파일 4개와 그 관계를
+그림으로 먼저 보면 이렇다.
+
+```
+개발자 push
+   ↓
+GitHub Webhook (114.110.162.53:30880/github-webhook/)
+   ↓
+Jenkins 컨트롤러 (jenkins 네임스페이스, 파드 1개, 항상 켜져 있음)
+   ↓ "일꾼 파드 하나 만들어줘"
+쿠버네티스가 빌드 전용 파드를 새로 생성 (컨테이너 4개가 한 파드 안에 같이 뜸)
+   ↓
+그 파드 안에서 Checkout → Build&Push → Sign → Deploy를 순서대로 실행
+   ↓
+파이프라인 끝나면 그 파드는 삭제 (컨트롤러만 계속 대기 상태로 남음)
+```
+
+**만든 파일 4개와 역할**
+
+| 파일 | 역할 |
+|---|---|
+| `k8s/jenkins-pv.yaml` | Jenkins 컨트롤러가 쓸 저장공간(하드디스크 역할) — 12절 |
+| `k8s/jenkins-values.yaml` | Jenkins 자체를 Helm으로 설치할 때의 설정값 |
+| `k8s/jenkins-deploy-rbac.yaml` | 빌드 파드가 KR2에 배포할 수 있는 권한(출입카드) — 13절 |
+| `Jenkinsfile` | 실제 파이프라인 — "무엇을 어떤 순서로 할지"를 코드로 적은 것 |
+
+**빌드 파드 안 컨테이너 4개가 왜 이렇게 생겼나**
+
+`Jenkinsfile`의 `agent { kubernetes { yaml "..." } }` 안에 컨테이너 3개(+Jenkins가 자동으로 붙이는 통신용
+컨테이너까지 4개)를 정의했다. 전부 같은 파드 안이라 워크스페이스(작업 디렉터리)를 공유한다 — 그래서
+Checkout에서 받은 코드를 kaniko가, kaniko가 push한 이미지 태그를 cosign이 그대로 이어받아 쓸 수 있다.
+
+```yaml
+- name: kaniko
+  image: gcr.io/kaniko-project/executor:v1.23.2-debug
+  command: ["/busybox/cat"]   # ← 이게 왜 필요한가
+  tty: true
+```
+
+세 컨테이너 다 `command: ["cat"]`으로 원래 하려던 일을 안 하고 그냥 "대기"만 하게 만들었다. 컨테이너는
+기본적으로 시킨 일을 끝내면 바로 죽는데, Jenkins는 스테이지가 실행되는 시점에 그 컨테이너 안으로 명령을
+"찔러 넣는" 방식으로 동작하므로, 컨테이너가 안 죽고 계속 살아있어야 한다. `cat`은 입력이 없으면 그냥
+무한 대기하는 명령이라 이 용도에 딱 맞다.
+
+**4개 스테이지, 각각 어느 컨테이너에서 도는가**
+
+| 스테이지 | 실행 컨테이너 | 하는 일 |
+|---|---|---|
+| Checkout | (기본 git, 별도 컨테이너 없음) | GitHub에서 코드 받기 |
+| Build & Push | `kaniko` | `Dockerfile` 빌드 + NCR로 곧바로 push. 태그는 `jenkins-${BUILD_NUMBER}`(예: `jenkins-6`)로 **매 빌드 고유** |
+| Sign | `cosign`(alpine 기반) | 실행 시점에 cosign v2.4.1 바이너리를 GitHub에서 받아와 서명. 비밀번호는 `cosign-key` Secret에서 자동 주입 |
+| Deploy | `kubectl`(bitnamilegacy 기반) | 파드 자신의 인증 토큰(`/var/run/secrets/.../token`)을 읽어 별도 kubeconfig 없이 `set image` + `rollout status` |
+
+**겪었던 고비들(4.14절 상세)**: Bitnami가 짧은 버전 태그를 없애버려서 `bitnami/kubectl:1.33`이 안 당겨짐,
+cosign/kubectl 컨테이너 둘 다 기본이 non-root라 Jenkins가 그 안에서 명령을 실행조차 못 함, cosign 서명
+비밀번호를 시크릿 생성 시 잘못 입력해서 서명이 매번 실패 — 이 세 가지를 로그 보고 하나씩 잡아서, 결국
+**push 한 번으로 빌드→서명→KR2 배포까지 사람 개입 없이 끝까지 도는 것**을 실제로 확인했다(`PROJECT_LOG.md` 4.14절).
+
+🎤 **발표 한 줄**: "빌드 전용 파드 하나에 Kaniko·cosign·kubectl 세 컨테이너를 태워서, 코드 체크아웃부터
+배포까지 워크스페이스를 공유하며 한 파이프라인 안에서 이어지도록 만들었습니다."
+
 ---
 
 ## 12. 영속 스토리지 — PV & hostPath (Jenkins에 필요)
@@ -335,6 +398,24 @@ Job 설정·빌드 히스토리가 날아가면 곤란하다 → "파드가 죽�
 
 hostPath는 특정 노드의 로컬 디스크라, Jenkins 파드가 다른 노드로 옮겨가면 히스토리를 잃는다. 그래서
 `nodeSelector`로 Jenkins 파드를 항상 같은 노드에 고정한다(단일 인스턴스라 이 타협은 실용적).
+
+### 12.4 실제로 만든 것 (`k8s/jenkins-pv.yaml`)
+
+```yaml
+hostPath:
+  path: /data/jenkins
+  type: Directory
+nodeAffinity:
+  ...
+    - key: kubernetes.io/hostname
+      values: [chaosarena-worker1-kr2]
+```
+
+`chaosarena-worker1-kr2` 서버 한 대의 `/data/jenkins` 디렉터리를 저장공간으로 지정했다. 이 PV의
+`storageClassName: jenkins-local`이라는 이름표를, `k8s/jenkins-values.yaml`의 `persistence.storageClass`가
+똑같이 가리키게 맞춰서 Jenkins의 PVC가 이 PV에 정확히 바인딩되게 했다. 그리고 `jenkins-values.yaml`의
+`controller.nodeSelector`도 같은 서버(`chaosarena-worker1-kr2`)를 가리키게 짝을 맞췄다 — 저장공간과
+그걸 쓰는 파드가 항상 같은 서버에 있어야 하기 때문.
 
 🎤 **발표 한 줄**: "직접 구축한 클러스터라 클라우드의 자동 디스크 기능이 없어서, Jenkins의 기억(설정·히스토리)이
 날아가지 않도록 특정 노드의 디렉터리를 수동으로 영속 저장소로 붙였습니다."
@@ -358,11 +439,21 @@ hostPath는 특정 노드의 로컬 디스크라, Jenkins 파드가 다른 노�
 
 - **앱용(`k8s/rbac.yaml`)**: Chaos 버튼으로 파드를 삭제하려면 권한이 필요 → `chaos-dashboard-sa` +
   "pods get/list/delete" Role.
-- **Jenkins용(`jenkins-deployer`, 예정)**: 배포 단계에서 Deployment를 수정하려면 → "deployments
-  get/list/patch" Role.
+- **Jenkins용(`k8s/jenkins-deploy-rbac.yaml`)**: 배포 단계에서 Deployment를 수정하려면 →
+  `jenkins-deployer` ServiceAccount + "deployments get/list/patch/watch, pods get/list/watch" Role.
+  (`watch`는 `kubectl rollout status`가 배포 진행 상황을 지켜보는 데 필요 — 처음엔 빠뜨렸다가 로그에
+  권한 에러가 스팸처럼 찍혀서 추가했다.)
 
 **원칙: 딱 필요한 권한만 준다(최소 권한).** 앱용은 파드 삭제만, Jenkins용은 배포 수정만 — 하나가 뚫려도
 피해 범위가 제한되게 분리한다.
+
+### 13.4 조금 특이한 점 — 신분증과 출입증이 다른 부서에 있다
+
+`jenkins-deployer` ServiceAccount(신분증)는 `jenkins` 네임스페이스에 있고, 그 신분증에 권한을 부여하는
+Role/RoleBinding(출입증)은 정작 `default` 네임스페이스(대상 리소스가 있는 곳)에 있다. "네임스페이스를
+넘나드는 권한 부여"인데, RoleBinding의 `subjects`에 "이 신분증은 다른 부서(jenkins) 소속이지만 이 문을
+열 수 있게 해줘"라고 명시하면 가능하다 — 빌드 파드는 `jenkins`에서 뜨지만, 정작 건드려야 할 대상은
+`default`에 있는 상황이라 이 구조가 자연스럽게 필요했다.
 
 🎤 **발표 한 줄**: "쿠버네티스는 기본적으로 모든 접근을 막기 때문에, 앱과 Jenkins에 각각 '딱 필요한
 권한만' 담은 신분증(ServiceAccount)을 발급해서 최소 권한 원칙을 지켰습니다."

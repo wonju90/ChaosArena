@@ -46,6 +46,10 @@ spec:
       image: bitnamilegacy/kubectl:1.33.4-debian-12-r0
       command: ["cat"]
       tty: true
+      # Bitnami 이미지는 기본적으로 non-root로 뜨는데, 그 상태에서는 Jenkins가 워크스페이스에
+      # 실행 스크립트를 쓰지 못해 "process apparently never started"가 난다(cosign 스테이지와 동일 원인).
+      securityContext:
+        runAsUser: 0
   volumes:
     - name: ncr-auth
       secret:

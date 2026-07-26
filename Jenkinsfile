@@ -104,6 +104,10 @@ spec:
 
         stage('Deploy') {
             steps {
+                script {
+                    // checkout scm이 채워주는 전체 커밋 해시를 화면 표시용으로 짧게 자른다.
+                    env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : "unknown"
+                }
                 container('kubectl') {
                     sh """
                         KUBE_TOKEN=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
@@ -111,6 +115,7 @@ spec:
                         KUBECTL="kubectl --server=https://kubernetes.default.svc --certificate-authority=\$KUBE_CA --token=\$KUBE_TOKEN -n default"
 
                         \$KUBECTL set image deployment/chaos-demo chaos-demo=${REGISTRY}:${IMAGE_TAG}
+                        \$KUBECTL set env deployment/chaos-demo BUILD_NUMBER=${env.BUILD_NUMBER} GIT_COMMIT=${env.GIT_COMMIT_SHORT}
                         \$KUBECTL rollout status deployment/chaos-demo --timeout=180s
                     """
                 }

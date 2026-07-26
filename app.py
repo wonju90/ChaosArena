@@ -58,6 +58,11 @@ SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 # 배포 버전 표시용 (Deployment에서 env로 주입하면 화면에 "v3" 같은 값이 뜬다)
 APP_VERSION = os.environ.get("APP_VERSION", "v1")
 
+# Jenkins CI/CD가 배포 직후 `kubectl set env`로 채워주는 값들 (수동 배포/로컬에서는 빈 값).
+# 화면에서 "지금 몇 번째 빌드가 떠 있는지"를 보여주는 용도.
+BUILD_NUMBER = os.environ.get("BUILD_NUMBER", "")
+GIT_COMMIT = os.environ.get("GIT_COMMIT", "")
+
 # LOCAL_MODE에서 사용할 가짜 파드 목록 (이름, 노드) - EXPECTED_REPLICAS 기본값(3)과 개수를 맞춤
 MOCK_PODS = [
     ("chaos-demo-mock-a", "local-node-1"),
@@ -376,6 +381,8 @@ def api_status():
     return jsonify(
         {
             "version": APP_VERSION,
+            "build_number": BUILD_NUMBER,
+            "git_commit": GIT_COMMIT,
             "local_mode": LOCAL_MODE,
             "total_requests": total,
             "error_rate_percent": error_rate,

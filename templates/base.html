@@ -108,6 +108,20 @@
     border: 1px solid transparent;
   }
 
+  /* 배포 알림 토스트: 어느 페이지에 있어도 CI/CD가 방금 새 버전을 배포했음을 보여준다
+     (미션 배지와 같은 "페이지 무관 공통 안내" 패턴, 시각적 스타일은 game.html의 event-toast 참고) */
+  .deploy-toast {
+    position: fixed; bottom: 26px; left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: rgba(15,23,37,0.96); border: 1px solid rgba(56,189,248,0.35);
+    backdrop-filter: blur(8px); color: #f1f5f9;
+    padding: 11px 22px; border-radius: 999px; font-size: 14px;
+    opacity: 0; transition: opacity 0.25s, transform 0.25s;
+    pointer-events: none; z-index: 80; max-width: 90vw; text-align: center;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+  }
+  .deploy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
   {% block extra_style %}{% endblock %}
 </style>
 </head>
@@ -147,8 +161,11 @@
         <span class="h-1.5 w-1.5 rounded-full bg-good"></span>
         <span>배포판 <span class="font-semibold text-subink">{{ version }}</span></span>
       </div>
+      <div id="deploy-build-badge" class="hidden text-[10px] text-faint pl-3.5"></div>
     </div>
   </aside>
+
+  <div id="deploy-toast" class="deploy-toast"></div>
 
   <!-- ── 메인 영역 ────────────────────────────────────────── -->
   <main class="flex-1 min-w-0 flex flex-col">
@@ -231,6 +248,37 @@ async function refreshMissionNavBadge() {
 }
 setInterval(refreshMissionNavBadge, 1000);
 refreshMissionNavBadge();
+
+// 배포 빌드 배지 + "방금 배포됨" 토스트: /api/status의 build_number가 바뀌면
+// Jenkins CI/CD가 그 사이에 새 이미지를 배포했다는 뜻이다. 페이지 새로고침 없이
+// 폴링만으로 감지하므로, 어느 페이지를 보고 있어도 배포 순간을 놓치지 않는다.
+let lastSeenBuildNumber = null;
+let deployToastTimer = null;
+function showDeployToast(text) {
+  const el = document.getElementById('deploy-toast');
+  el.innerText = text;
+  el.classList.add('show');
+  clearTimeout(deployToastTimer);
+  deployToastTimer = setTimeout(() => el.classList.remove('show'), 4000);
+}
+async function refreshDeployInfo() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    const badge = document.getElementById('deploy-build-badge');
+    if (data.build_number) {
+      badge.innerText = `빌드 #${data.build_number}` + (data.git_commit ? ` · ${data.git_commit}` : '');
+      badge.classList.remove('hidden');
+      // 첫 폴링(lastSeenBuildNumber === null)은 "새로 배포됨"이 아니라 "페이지를 새로 연 것"이므로 토스트를 안 띄운다.
+      if (lastSeenBuildNumber !== null && data.build_number !== lastSeenBuildNumber) {
+        showDeployToast(`🚀 새 버전이 배포되었습니다 (빌드 #${data.build_number})`);
+      }
+      lastSeenBuildNumber = data.build_number;
+    }
+  } catch (e) {}
+}
+setInterval(refreshDeployInfo, 5000);
+refreshDeployInfo();
 </script>
 {% block extra_script %}{% endblock %}
 </body>

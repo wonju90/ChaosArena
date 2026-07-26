@@ -224,6 +224,10 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   4가지 장애물(Bitnami 태그 소실/non-root 셸 실행 실패/cosign 비밀번호 오타/RBAC watch 누락)을 로그 기반으로
   하나씩 해결 (4.14절). 이미지 태그를 `jenkins-${BUILD_NUMBER}`로 매 빌드 고유하게 부여해 어떤 빌드가
   배포됐는지 추적 가능. 1단계로 **KR2 전용**(KR1 확장은 3.5절 트레이드오프 참고).
+- [x] **자동배포 시각화** — Jenkinsfile Deploy 스테이지가 `kubectl set env`로 `BUILD_NUMBER`/`GIT_COMMIT`을
+  Deployment에 심어주고, `/api/status`가 이를 노출. 프론트가 5초 폴링으로 빌드 번호 변경을 감지해 사이드바
+  배지 갱신 + "🚀 새 버전이 배포되었습니다" 토스트(4초)를 모든 페이지 공통으로 표시. Playwright로 빌드
+  번호 전환 시나리오를 재현해 배지/토스트 타이밍까지 실제 검증 (docs/CONCEPTS.md 11.6절)
 - [x] **NCR 이미지 서명(cosign) 도입 + content-trust 정책 재활성화** — 3중 장애물(cosign 최신버전 호환성/attestation 매니페스트/스테일 이미지 캐시)을 순서대로 해결, 서명된 이미지가 정책 재활성화 상태에서 정상 pull됨을 실제로 검증 (4.13절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 

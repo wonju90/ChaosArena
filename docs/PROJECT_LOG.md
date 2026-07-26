@@ -64,6 +64,24 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - `terraform/modules/chaos-cluster` 모듈을 provider(kr1/kr2)만 바꿔 두 번 호출해 멀티 리전 구성.
 - 자격증명·VPC ID 등 민감/환경값은 `terraform.tfvars`(gitignore)로 분리, `.example`만 커밋.
 
+### 3.5 Jenkins 호스팅 위치 → **KR2 클러스터 내부(Pod)**
+- **후보**: ① KR2 클러스터 내부에 Deployment로 배포, ② 별도 VM(마스터 노드 또는 신규 인스턴스)에 직접 설치.
+- **선택 이유**: KR1은 최소 스펙(2vCPU/4GB)이라 Jenkins+빌드 부하를 얹기 빠듯한 반면, KR2는 워커 3대(4vCPU/16GB)에
+  여유가 충분함(`kubectl describe nodes` 확인 결과 CPU 요청 2~21%, 메모리 1% 수준). 별도 VM을 새로 프로비저닝하지
+  않고 기존 클러스터 리소스를 재사용 — "자가치유 클러스터 위에 CI/CD도 함께 돈다"는 스토리도 일관됨.
+- **known 제약사항**(구현 착수 전 확인):
+  - `kubectl get storageclass` 결과 없음 — bare-metal kubeadm이라 CSI 드라이버 미설치. Jenkins 홈 디렉터리 영속화는
+    **hostPath 기반 수동 PV + 컨트롤러 파드 nodeSelector 고정**으로 우회 예정.
+  - 워커 노드 컨테이너 런타임이 **containerd**(Docker 데몬 없음) — `/var/run/docker.sock` 마운트 방식 불가.
+    **Kaniko**(데몬 없이 이미지 빌드)로 대체 예정.
+  - NodePort 30000-32767 전체가 이미 `0.0.0.0/0`으로 열려있음(`terraform/modules/chaos-cluster/network.tf`) —
+    GitHub Webhook을 위한 별도 방화벽/Terraform 변경 불필요, Jenkins Service를 NodePort로 노출하면 끝.
+- **트레이드오프(인지하고 보류)**: Jenkins 배포 단계(RBAC, kubectl 접근)는 1단계로 **KR2 전용**으로 스코프한다.
+  KR1을 나중에 정식 스펙(`r2.c4m16`)으로 재구축해 진짜 멀티클러스터가 되면, Jenkins가 KR1에도 배포하려면
+  ① KR1 API 서버(6443)로의 네트워크 경로(현재 보안그룹은 `admin_cidr`만 허용, KR2 파드망 → KR1 API 불가)와
+  ② KR1용 별도 인증(kubeconfig/ServiceAccount)을 추가로 붙이는 후속 작업이 필요함. 지금 당장 막는 문제는 아니고,
+  "KR1 정식 구축 후 확장 예정"으로 남겨둔 결정.
+
 ---
 
 ## 4. 트러블슈팅 로그 ⭐
@@ -192,7 +210,20 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [ ] KR1(판교) RAM 쿼터 확보 → `r2.c4m16`·워커 3대로 정식 재구축 → `deployment-kr1-test.yaml` → `deployment.yaml`(APP_VERSION=kr1) 전환
 - [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, 도메인 `www.chaosarena.cloud` 확보됨, NHN DNS Plus 권한 대기 중)
 - [x] **AlertManager 알림 규칙(파드 다운/CPU/에러율) + Slack 라우팅** — `PrometheusRule`(release 라벨 필요, 4.11 교훈 적용) + Alertmanager Slack 연동. 3단 실패(helm --reuse-values 함정 / Secret 네임스페이스 불일치 / null receiver 삭제로 인한 reconcile 전체 실패)를 로그 기반으로 하나씩 좁혀 해결 (4.12절). `ChaosDemoHighCPU` 알림이 실제로 파드명까지 템플릿 치환되어 Slack 도착 확인
-- [ ] Jenkins CI/CD (호스팅 위치 결정 → Jenkinsfile → GitHub 웹훅 → 빌드/NCR push/배포 자동화)
+- [ ] **Jenkins CI/CD** — 호스팅 위치를 KR2 클러스터 내부(Pod)로 결정(3.5절). 착수해 아래까지 진행,
+  나머지는 다음 세션에서 이어감.
+  - [x] 호스팅 위치 결정 + 제약사항(StorageClass 없음/containerd/NodePort 개방) 파악
+  - [x] `jenkins` 네임스페이스 생성 (KR2)
+  - [x] `ncr-secret`을 `default` → `jenkins` 네임스페이스로 복사
+  - [ ] `cosign-key` 시크릿 생성 — `cosign.key`는 `kr2-master:/tmp/cosign.key`에 올려둔 상태.
+        비밀번호는 대화 로그에 남기지 않기 위해 **직접 SSH 접속 후 `kubectl create secret generic cosign-key -n jenkins ...`를
+        본인이 실행**해야 함 (커맨드는 이전 대화 참고). 완료 후 `/tmp/cosign.key` 삭제할 것.
+  - [ ] hostPath 기반 수동 PV로 영속 스토리지 구성
+  - [ ] Helm으로 Jenkins 설치 (`k8s/jenkins-values.yaml`, NodePort 노출)
+  - [ ] 배포용 RBAC(`jenkins-deployer`) 작성
+  - [ ] Jenkins 초기 설정 + GitHub 웹훅 + Pipeline Job 생성 (트리거 브랜치: `infra/k8s-setup`)
+  - [ ] Jenkinsfile 작성 (Kaniko 빌드+push → cosign 서명 → kubectl 배포까지 완전 자동화, 수동 개입 없음)
+  - [ ] End-to-end 검증 (push → 빌드 → 서명 → KR2 배포 → 브라우저 확인)
 - [x] **NCR 이미지 서명(cosign) 도입 + content-trust 정책 재활성화** — 3중 장애물(cosign 최신버전 호환성/attestation 매니페스트/스테일 이미지 캐시)을 순서대로 해결, 서명된 이미지가 정책 재활성화 상태에서 정상 pull됨을 실제로 검증 (4.13절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
@@ -213,7 +244,9 @@ ChaosArena/
 │   ├── main.tf             # 모듈 2회 호출
 │   ├── modules/chaos-cluster/  # VPC 재사용 + 포트 + 인스턴스 + 마스터 FIP
 │   └── terraform.tfvars.example
-└── docs/PROJECT_LOG.md     # (이 문서)
+└── docs/
+    ├── PROJECT_LOG.md      # (이 문서) 의사결정 + 트러블슈팅 기록
+    └── CONCEPTS.md         # 초보자 관점 배경지식 노트 (Jenkins, PV/hostPath, RBAC 등)
 ```
 
 ---

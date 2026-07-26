@@ -1,0 +1,40 @@
+# -----------------------------------------------------------------------------
+# jenkinsci/jenkins 공식 Helm 차트 values.
+# 적용: helm upgrade --install jenkins jenkins/jenkins -n jenkins -f k8s/jenkins-values.yaml
+#
+# 이 클러스터(KR2)의 제약에 맞춘 핵심 설정:
+# - persistence: k8s/jenkins-pv.yaml로 미리 만들어둔 hostPath PV(storageClassName: jenkins-local)에
+#   정적으로 바인딩되도록 storageClass를 맞춤.
+# - nodeSelector: hostPath PV가 chaosarena-worker1-kr2의 로컬 디스크를 가리키므로,
+#   컨트롤러 파드도 반드시 같은 노드에 뜨도록 고정(안 그러면 PV를 못 찾음).
+# - serviceType: NodePort — MetalLB 없이 워커 공인IP:포트로 바로 접속(기존 chaos-demo와 동일 패턴).
+# - installPlugins: GitHub Webhook 트리거 + Kubernetes 에이전트 파드 스폰에 필요한 플러그인 명시.
+# -----------------------------------------------------------------------------
+controller:
+  serviceType: NodePort
+  nodePort: 30880
+  nodeSelector:
+    kubernetes.io/hostname: chaosarena-worker1-kr2
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  installPlugins:
+    - kubernetes
+    - workflow-aggregator
+    - git
+    - github
+    - github-branch-source
+    - configuration-as-code
+    - credentials-binding
+
+persistence:
+  enabled: true
+  storageClass: jenkins-local
+  size: 8Gi
+
+agent:
+  enabled: true

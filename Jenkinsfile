@@ -38,7 +38,9 @@ spec:
         - name: cosign-key
           mountPath: /mnt/cosign-key
     - name: kubectl
-      image: bitnami/kubectl:1.33
+      # bitnami/kubectl:1.33처럼 짧은 태그는 Bitnami의 카탈로그 개편(2025)으로 더 이상 존재하지 않음.
+      # 예전 무료 이미지는 bitnamilegacy 네임스페이스의 전체 버전 태그로 옮겨짐.
+      image: bitnamilegacy/kubectl:1.33.4-debian-12-r0
       command: ["cat"]
       tty: true
   volumes:

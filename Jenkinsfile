@@ -21,12 +21,15 @@ spec:
         - name: ncr-auth
           mountPath: /kaniko/.docker
     - name: cosign
-      image: curlimages/curl:8.11.0
+      # curlimages/curl은 기본적으로 non-root(curl_user)로 떠서, Jenkins가 워크스페이스에
+      # 실행 스크립트를 쓰는 과정에서 권한 문제로 "process apparently never started"가 발생했다.
+      # root로 도는 alpine + 내장 wget으로 대체.
+      image: alpine:3.19
       command: ["cat"]
       tty: true
       env:
         - name: DOCKER_CONFIG
-          value: /home/curl_user/.docker
+          value: /root/.docker
         - name: COSIGN_PASSWORD
           valueFrom:
             secretKeyRef:
@@ -34,7 +37,7 @@ spec:
               key: password
       volumeMounts:
         - name: ncr-auth
-          mountPath: /home/curl_user/.docker
+          mountPath: /root/.docker
         - name: cosign-key
           mountPath: /mnt/cosign-key
     - name: kubectl
@@ -84,7 +87,7 @@ spec:
             steps {
                 container('cosign') {
                     sh """
-                        curl -sSL -o /tmp/cosign https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
+                        wget -q -O /tmp/cosign https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
                         chmod +x /tmp/cosign
                         /tmp/cosign sign --yes \
                           --key=/mnt/cosign-key/cosign.key \

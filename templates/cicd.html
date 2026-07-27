@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% block title %}CI/CD 미션 — ChaosArena{% endblock %}
+{% block page_title %}CI/CD 미션 콘솔{% endblock %}
+{% block page_sub %}Jenkins 자동배포를 파드 복구와 똑같이 랭크로 채점합니다{% endblock %}
+
+{% block extra_style %}
+  .deploy-rank-card {
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    padding: 34px 20px 28px;
+  }
+  .deploy-rank-letter {
+    font-size: 128px; font-weight: 900; line-height: 1; text-shadow: 0 0 50px currentColor;
+  }
+  .deploy-rank-letter.rank-S { color: #facc15; } .deploy-rank-letter.rank-A { color: #a78bfa; }
+  .deploy-rank-letter.rank-B { color: #38bdf8; } .deploy-rank-letter.rank-C { color: #94a3b8; }
+  .deploy-rank-letter.rank-pending { color: #475569; font-size: 72px; }
+  .deploy-rank-letter.pop { animation: deploy-rank-pop 0.5s ease-out; }
+  @keyframes deploy-rank-pop {
+    0% { transform: scale(0.35); opacity: 0; } 60% { transform: scale(1.15); opacity: 1; } 100% { transform: scale(1); }
+  }
+  .deploy-rank-caption { margin-top: 6px; font-size: 20px; font-weight: 800; color: #e8eef7; }
+  .deploy-rank-sub { margin-top: 4px; font-size: 13px; color: #8593a8; }
+  .deploy-combo-line { margin-top: 10px; min-height: 20px; font-size: 14px; color: #fb923c; font-weight: 700; }
+
+  .deploy-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 18px; }
+
+  .deploy-rank-zone-bar { position: relative; display: flex; height: 12px; border-radius: 999px; overflow: hidden; margin-top: 22px; }
+  .deploy-rank-zone-segment { height: 100%; }
+  .deploy-rank-zone-segment.zone-S { background: linear-gradient(90deg, #fde047, #eab308); }
+  .deploy-rank-zone-segment.zone-A { background: linear-gradient(90deg, #a78bfa, #8b5cf6); }
+  .deploy-rank-zone-segment.zone-B { background: linear-gradient(90deg, #38bdf8, #2563eb); }
+  .deploy-rank-zone-segment.zone-C { background: linear-gradient(90deg, #94a3b8, #64748b); }
+  .deploy-rank-zone-marker {
+    position: absolute; top: -4px; width: 4px; height: 20px; border-radius: 999px;
+    background: #f8fafc; box-shadow: 0 0 10px rgba(248,250,252,0.95);
+    transition: left 0.6s ease-out; left: 0%;
+  }
+  .deploy-rank-zone-labels { display: flex; justify-content: space-between; margin-top: 7px; font-size: 10px; color: #64748b; }
+
+  .deploy-confetti-canvas { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
+
+  .pipeline-steps { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+  .pipeline-step {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border-radius: 9px; background: #0b1220; border: 1px solid rgba(148,163,184,0.10);
+    font-size: 13px; color: #cdd7e6;
+  }
+  .pipeline-step .step-icon { font-size: 16px; }
+{% endblock %}
+
+{% block content %}
+
+<canvas id="deploy-confetti-canvas" class="deploy-confetti-canvas"></canvas>
+
+<div class="grid gap-4 lg:grid-cols-3">
+
+  <!-- ── 좌측: 배포 랭크 카드 ─────────────────────────────── -->
+  <div class="lg:col-span-2 flex flex-col gap-4">
+
+    <div class="panel">
+      <h2 class="panel-title">{{ ic.i('bolt') }} 이번 배포 미션 결과</h2>
+      <div class="deploy-rank-card">
+        <div id="deploy-rank-letter" class="deploy-rank-letter rank-pending">--</div>
+        <div id="deploy-rank-caption" class="deploy-rank-caption">아직 CI/CD 배포 기록이 없습니다</div>
+        <div id="deploy-rank-sub" class="deploy-rank-sub">Jenkins가 push를 감지하면 여기가 채워져요</div>
+        <div id="deploy-combo-line" class="deploy-combo-line"></div>
+
+        <div class="deploy-rank-zone-bar w-full" id="deploy-rank-zone-bar">
+          <div class="deploy-rank-zone-marker" id="deploy-rank-zone-marker"></div>
+        </div>
+        <div class="deploy-rank-zone-labels w-full" id="deploy-rank-zone-labels"></div>
+      </div>
+
+      <div class="deploy-stat-grid">
+        <div class="stat-tile stat-accent-blue">
+          <div class="stat-icon">🏗️</div>
+          <div id="deploy-stat-build" class="stat-value">--</div>
+          <div class="stat-label">빌드 번호</div>
+        </div>
+        <div class="stat-tile stat-accent-green">
+          <div class="stat-icon">📝</div>
+          <div id="deploy-stat-commit" class="stat-value" style="font-size:20px;">--</div>
+          <div class="stat-label">커밋</div>
+        </div>
+        <div class="stat-tile stat-accent-orange">
+          <div class="stat-icon">⏱️</div>
+          <div id="deploy-stat-duration" class="stat-value">--</div>
+          <div class="stat-label">파이프라인 소요시간</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── 우측: 파이프라인 단계 안내 ───────────────────────── -->
+  <div class="flex flex-col gap-4">
+    <div class="panel">
+      <h2 class="panel-title">{{ ic.i('grid') }} 파이프라인 단계</h2>
+      <div class="pipeline-steps">
+        <div class="pipeline-step"><span class="step-icon">📦</span> Build &amp; Push — Kaniko가 이미지 빌드 후 NCR에 push</div>
+        <div class="pipeline-step"><span class="step-icon">🔏</span> Sign — cosign으로 이미지 서명 (Rekor 투명성 로그 기록)</div>
+        <div class="pipeline-step"><span class="step-icon">🚀</span> Deploy — kubectl로 롤아웃 + 상태 확인까지 자동</div>
+      </div>
+      <p class="mt-3 text-[11px] text-faint leading-relaxed">
+        랭크는 Checkout 시작부터 Deploy 직전까지 걸린 전체 시간(초)을 파드 복구 미션과 같은 방식(S/A/B/C)으로 채점한 것입니다.
+      </p>
+    </div>
+  </div>
+
+</div>
+
+{% endblock %}
+
+{% block extra_script %}
+<script>
+const DEPLOY_RANK_THRESHOLDS = {{ deploy_rank_thresholds | tojson }};
+const DEPLOY_RANK_ZONE_MAX_SECONDS = DEPLOY_RANK_THRESHOLDS[DEPLOY_RANK_THRESHOLDS.length - 1][0] * 1.5;
+const DEPLOY_RANK_COLORS = { S: '#facc15', A: '#a78bfa', B: '#38bdf8', C: '#94a3b8' };
+const DEPLOY_RANK_CAPTIONS = {
+  S: '🏆 완벽한 배포! S랭크!',
+  A: '✨ 훌륭한 배포! A랭크',
+  B: '👍 안정적인 배포. B랭크',
+  C: '🐢 배포는 됐어요. C랭크',
+};
+
+let cicdLastSeenBuildNumber = null;
+let deployComboCount = 0;
+
+function buildDeployRankZoneBar() {
+  const bar = document.getElementById('deploy-rank-zone-bar');
+  const labelsEl = document.getElementById('deploy-rank-zone-labels');
+  const marker = document.getElementById('deploy-rank-zone-marker');
+  let prevLimit = 0;
+  const segments = [];
+  const labels = [];
+  DEPLOY_RANK_THRESHOLDS.forEach(([limit, label]) => {
+    const widthPct = ((limit - prevLimit) / DEPLOY_RANK_ZONE_MAX_SECONDS) * 100;
+    segments.push(`<div class="deploy-rank-zone-segment zone-${label}" style="width:${widthPct}%;"></div>`);
+    labels.push(`<span>${label} ≤${limit}s</span>`);
+    prevLimit = limit;
+  });
+  const cWidthPct = ((DEPLOY_RANK_ZONE_MAX_SECONDS - prevLimit) / DEPLOY_RANK_ZONE_MAX_SECONDS) * 100;
+  segments.push(`<div class="deploy-rank-zone-segment zone-C" style="width:${cWidthPct}%;"></div>`);
+  labels.push('<span>C</span>');
+  bar.innerHTML = segments.join('') + marker.outerHTML;
+  labelsEl.innerHTML = labels.join('');
+}
+
+function updateDeployRankZoneMarker(elapsedSeconds) {
+  const marker = document.getElementById('deploy-rank-zone-marker');
+  const pct = Math.min((elapsedSeconds / DEPLOY_RANK_ZONE_MAX_SECONDS) * 100, 100);
+  marker.style.left = pct + '%';
+}
+
+// 컨페티 (game.html과 같은 방식, 이 페이지 전용 캔버스에 그림)
+function fireDeployConfetti(colorHex) {
+  const canvas = document.getElementById('deploy-confetti-canvas');
+  canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+  const ctx = canvas.getContext('2d');
+  const colors = [colorHex, '#ffffff', '#fde68a'];
+  const particles = Array.from({ length: 80 }, () => ({
+    x: Math.random() * canvas.width, y: -20 - Math.random() * canvas.height * 0.3,
+    size: 4 + Math.random() * 6, speedY: 2 + Math.random() * 4, speedX: -2 + Math.random() * 4,
+    rotation: Math.random() * 360, rotSpeed: -10 + Math.random() * 20,
+    color: colors[Math.floor(Math.random() * colors.length)],
+  }));
+  const startTime = performance.now();
+  function frame(now) {
+    const elapsed = now - startTime;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    particles.forEach((p) => {
+      p.x += p.speedX; p.y += p.speedY; p.rotation += p.rotSpeed;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate((p.rotation * Math.PI) / 180);
+      ctx.fillStyle = p.color; ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size); ctx.restore();
+    });
+    if (elapsed < 2200) requestAnimationFrame(frame);
+    else ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  requestAnimationFrame(frame);
+}
+
+// 사운드 (game.html의 완료음과 같은 패턴, 음소거 설정도 공유)
+let deployAudioCtx = null;
+function getDeployAudioContext() {
+  if (!deployAudioCtx) deployAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return deployAudioCtx;
+}
+function isMuted() { return localStorage.getItem('chaosDashboardMuted') === 'true'; }
+function playDeployTone(freq, durationMs, type, delayMs) {
+  if (isMuted()) return;
+  const ctx = getDeployAudioContext();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type || 'sine';
+  osc.frequency.value = freq;
+  osc.connect(gain); gain.connect(ctx.destination);
+  const startAt = ctx.currentTime + (delayMs || 0) / 1000;
+  gain.gain.setValueAtTime(0.15, startAt);
+  gain.gain.exponentialRampToValueAtTime(0.001, startAt + durationMs / 1000);
+  osc.start(startAt); osc.stop(startAt + durationMs / 1000);
+}
+function playDeployCompleteSound(rank) {
+  const baseFreqByRank = { S: 880, A: 660, B: 523, C: 392 };
+  const base = baseFreqByRank[rank] || 392;
+  playDeployTone(base, 120, 'sine', 0);
+  playDeployTone(base * 1.25, 120, 'sine', 110);
+  playDeployTone(base * 1.5, 220, 'sine', 220);
+}
+
+function renderDeployRank(rank, buildNumber, gitCommit, durationSeconds, isFreshDeploy) {
+  const letterEl = document.getElementById('deploy-rank-letter');
+  letterEl.innerText = rank;
+  letterEl.className = 'deploy-rank-letter rank-' + rank;
+  document.getElementById('deploy-rank-caption').innerText = DEPLOY_RANK_CAPTIONS[rank] || '';
+  document.getElementById('deploy-rank-sub').innerText = `빌드 #${buildNumber} · ${gitCommit || '커밋 정보 없음'}`;
+  document.getElementById('deploy-stat-build').innerText = '#' + buildNumber;
+  document.getElementById('deploy-stat-commit').innerText = gitCommit || '--';
+  document.getElementById('deploy-stat-duration').innerText = durationSeconds + '초';
+  updateDeployRankZoneMarker(durationSeconds);
+
+  if (rank === 'S') deployComboCount += 1; else deployComboCount = 0;
+  document.getElementById('deploy-combo-line').innerText =
+    deployComboCount >= 2 ? `🔥 ${deployComboCount}연속 S랭크 배포!` : '';
+
+  if (isFreshDeploy) {
+    letterEl.classList.remove('pop');
+    void letterEl.offsetWidth;
+    letterEl.classList.add('pop');
+    fireDeployConfetti(DEPLOY_RANK_COLORS[rank] || '#94a3b8');
+    playDeployCompleteSound(rank);
+  }
+}
+
+async function refreshDeployRank() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    if (!data.build_number || data.deploy_rank === null || data.deploy_rank === undefined) return;
+
+    const isFirstLoad = cicdLastSeenBuildNumber === null;
+    const isFreshDeploy = !isFirstLoad && data.build_number !== cicdLastSeenBuildNumber;
+    if (isFirstLoad || isFreshDeploy) {
+      renderDeployRank(data.deploy_rank, data.build_number, data.git_commit, data.deploy_duration_seconds, isFreshDeploy);
+    }
+    cicdLastSeenBuildNumber = data.build_number;
+  } catch (e) {}
+}
+
+buildDeployRankZoneBar();
+setInterval(refreshDeployRank, 5000);
+refreshDeployRank();
+</script>
+{% endblock %}

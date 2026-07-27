@@ -236,7 +236,17 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **자동배포 시각화** — Jenkinsfile Deploy 스테이지가 `kubectl set env`로 `BUILD_NUMBER`/`GIT_COMMIT`을
   Deployment에 심어주고, `/api/status`가 이를 노출. 프론트가 5초 폴링으로 빌드 번호 변경을 감지해 사이드바
   배지 갱신 + "🚀 새 버전이 배포되었습니다" 토스트(4초)를 모든 페이지 공통으로 표시. Playwright로 빌드
-  번호 전환 시나리오를 재현해 배지/토스트 타이밍까지 실제 검증 (docs/CONCEPTS.md 11.6절)
+  번호 전환 시나리오를 재현해 배지/토스트 타이밍까지 실제 검증 (docs/CONCEPTS.md 11.6절). 처음 시도했던
+  "화면 전체 틴트+대형 배너" 효과는 실제로 보고 나서 반려되어 코드에서 제거하고, 아래 CI/CD 탭으로 대체.
+- [x] **CI/CD 전용 탭 + "배포 랭크" 게임화** ⭐ — 파드 복구를 채점하던 S/A/B/C 랭크 시스템을 Jenkins
+  파이프라인 소요시간(Build&Push→Sign→Deploy)에도 그대로 적용. `Jenkinsfile`이 Checkout~Deploy 직전까지
+  걸린 시간을 재서 `DEPLOY_DURATION_SECONDS`로 앱에 전달하면, `app.py`가 `compute_deploy_rank()`로
+  채점해 `/api/status`에 노출하고, 새로 만든 `/cicd`(`templates/cicd.html`) 탭이 그 랭크를 큰 글자 +
+  게이지 + 컨페티/사운드(파드 복구 랭크 연출 재사용)로 보여준다. 연속 S랭크 배포 시 콤보 표시도 동일하게
+  적용. 화면 전체가 아니라 **이 탭 안에서만** 반응하게 해서, 다른 페이지의 절제된 톤은 그대로 유지.
+  로컬(Playwright)에서 빌드 7→8(C랭크)→9(S)→10(S, 2연속 콤보) 전환 시나리오를 재현해 랭크/게이지/콤보
+  갱신과 리빌 연출까지 스크린샷으로 검증 (docs/CONCEPTS.md 11.7절). 다회차 배포 이력("퀘스트 로그")은
+  이 앱 파드 자체가 배포마다 재시작되는 구조상 영속 저장소(Redis/DB) 없이는 못 쌓아서 의도적으로 보류.
 - [x] **NCR 이미지 서명(cosign) 도입 + content-trust 정책 재활성화** — 3중 장애물(cosign 최신버전 호환성/attestation 매니페스트/스테일 이미지 캐시)을 순서대로 해결, 서명된 이미지가 정책 재활성화 상태에서 정상 pull됨을 실제로 검증 (4.13절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
@@ -247,7 +257,7 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 ```
 ChaosArena/
 ├── app.py                  # Flask 앱 (게임 로직 + K8s API + 대시보드 API)
-├── templates/              # base/game/monitor/records (Jinja2 상속)
+├── templates/              # base/game/monitor/records/cicd (Jinja2 상속)
 ├── Dockerfile
 ├── requirements.txt
 ├── k8s/                    # rbac, deployment, service(lb/nodeport), metallb, secret 예시

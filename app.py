@@ -63,6 +63,10 @@ APP_VERSION = os.environ.get("APP_VERSION", "v1")
 BUILD_NUMBER = os.environ.get("BUILD_NUMBER", "")
 GIT_COMMIT = os.environ.get("GIT_COMMIT", "")
 
+# 이번 빌드의 파이프라인 전체 소요시간(초). Jenkinsfile이 Checkout 시작~Deploy 직전까지 측정해서 넘겨준다.
+# CI/CD 탭에서 이 값을 파드 복구 시간과 같은 방식으로 S/A/B/C 랭크로 보여주는 데 쓴다.
+DEPLOY_DURATION_SECONDS = os.environ.get("DEPLOY_DURATION_SECONDS", "")
+
 # LOCAL_MODE에서 사용할 가짜 파드 목록 (이름, 노드) - EXPECTED_REPLICAS 기본값(3)과 개수를 맞춤
 MOCK_PODS = [
     ("chaos-demo-mock-a", "local-node-1"),
@@ -79,6 +83,15 @@ RANK_THRESHOLDS = [
     (20, "B"),
 ]
 RANK_DEFAULT = "C"
+
+# 배포 파이프라인(Kaniko 빌드+push → cosign 서명 → kubectl 배포)의 랭크 판정 기준(초).
+# 실제 빌드 로그 몇 건을 보고 튜닝된 값이 아니라 Kaniko/cosign/kubectl 단계별 평소 소요시간을 감안한
+# 추정치라, 실제 빌드 시간 분포를 몇 번 더 확인한 뒤 조정할 수 있다.
+DEPLOY_RANK_THRESHOLDS = [
+    (90, "S"),
+    (150, "A"),
+    (240, "B"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +254,14 @@ def compute_rank(elapsed_seconds):
     return RANK_DEFAULT
 
 
+def compute_deploy_rank(elapsed_seconds):
+    """배포 파이프라인 소요시간(초)을 S/A/B/C 랭크로 변환한다. compute_rank와 같은 방식, 기준표만 다르다."""
+    for limit, rank in DEPLOY_RANK_THRESHOLDS:
+        if elapsed_seconds <= limit:
+            return rank
+    return RANK_DEFAULT
+
+
 # ---------------------------------------------------------------------------
 # 5. Slack 알림 헬퍼 함수 (선택 기능)
 # ---------------------------------------------------------------------------
@@ -338,6 +359,16 @@ def records_page():
     return render_template("records.html", version=APP_VERSION, active_page="records")
 
 
+@app.route("/cicd")
+def cicd_page():
+    return render_template(
+        "cicd.html",
+        version=APP_VERSION,
+        active_page="cicd",
+        deploy_rank_thresholds=DEPLOY_RANK_THRESHOLDS,
+    )
+
+
 @app.route("/health")
 def health():
     """K8s Liveness/Readiness Probe가 호출하는 헬스체크 엔드포인트."""
@@ -383,6 +414,14 @@ def api_status():
             "version": APP_VERSION,
             "build_number": BUILD_NUMBER,
             "git_commit": GIT_COMMIT,
+            "deploy_duration_seconds": (
+                int(DEPLOY_DURATION_SECONDS) if DEPLOY_DURATION_SECONDS.isdigit() else None
+            ),
+            "deploy_rank": (
+                compute_deploy_rank(int(DEPLOY_DURATION_SECONDS))
+                if DEPLOY_DURATION_SECONDS.isdigit()
+                else None
+            ),
             "local_mode": LOCAL_MODE,
             "total_requests": total,
             "error_rate_percent": error_rate,

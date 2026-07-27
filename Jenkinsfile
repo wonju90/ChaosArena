@@ -71,6 +71,11 @@ spec:
         stage('Checkout') {
             steps {
                 checkout scm
+                // 배포 랭크(게임 테마 CI/CD 탭)를 계산하려면 파이프라인 전체 소요시간이 필요하다.
+                // env.X = ... 로 지정한 값은 이후 스테이지에서도 그대로 읽을 수 있다.
+                script {
+                    env.PIPELINE_START_MS = System.currentTimeMillis().toString()
+                }
             }
         }
 
@@ -107,6 +112,8 @@ spec:
                 script {
                     // checkout scm이 채워주는 전체 커밋 해시를 화면 표시용으로 짧게 자른다.
                     env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : "unknown"
+                    // Checkout 스테이지 시작 시점부터 지금까지 걸린 시간(초) = 이번 빌드의 "배포 랭크" 소재.
+                    env.DEPLOY_DURATION_SECONDS = ((System.currentTimeMillis() - env.PIPELINE_START_MS.toLong()) / 1000).toInteger().toString()
                 }
                 container('kubectl') {
                     sh """
@@ -115,7 +122,7 @@ spec:
                         KUBECTL="kubectl --server=https://kubernetes.default.svc --certificate-authority=\$KUBE_CA --token=\$KUBE_TOKEN -n default"
 
                         \$KUBECTL set image deployment/chaos-demo chaos-demo=${REGISTRY}:${IMAGE_TAG}
-                        \$KUBECTL set env deployment/chaos-demo BUILD_NUMBER=${env.BUILD_NUMBER} GIT_COMMIT=${env.GIT_COMMIT_SHORT}
+                        \$KUBECTL set env deployment/chaos-demo BUILD_NUMBER=${env.BUILD_NUMBER} GIT_COMMIT=${env.GIT_COMMIT_SHORT} DEPLOY_DURATION_SECONDS=${env.DEPLOY_DURATION_SECONDS}
                         \$KUBECTL rollout status deployment/chaos-demo --timeout=180s
                     """
                 }

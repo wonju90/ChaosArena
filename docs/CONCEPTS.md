@@ -212,10 +212,37 @@ KR1(판교) + KR2(평촌) 두 리전에 클러스터를 각각 두어, 한쪽이
 
 **GSLB**(NHN Cloud DNS Plus)는 "지금 살아있는 클러스터로 사용자를 안내하는 교통정리 담당"이다.
 `/health` 주소를 계속 확인하다가 Active(KR1)가 응답 안 하면, DNS를 자동으로 Standby(KR2)로 바꿔준다.
-failover 로직을 직접 짜지 않고 클라우드 서비스에 위임했다. (현재 권한 대기 중 — `PROJECT_LOG.md` 참고)
+failover 로직을 직접 짜지 않고 클라우드 서비스에 위임했다.
+
+### 8.4 실제로 어떻게 구성했나 — Terraform이 못 하는 부분
+
+지금까지 인프라는 대부분 Terraform으로 코드화했지만, GSLB는 예외였다. Terraform provider의 리소스
+목록을 뒤져보니 일반 DNS Zone/레코드 리소스만 있고, **Pool·헬스체크·우선순위 기반 FAILOVER 같은 GSLB
+전용 기능은 아예 없었다.** 그래서 이 부분만은 NHN 콘솔에서 손으로 구성했다(인터넷 게이트웨이 생성
+리소스가 없어서 겪었던 것과 같은 종류의 "provider 커버리지 밖" 사례, `PROJECT_LOG.md` 4.4/4.15절).
+
+**계층 구조 (아래에서 위로 쌓임)**
+
+```
+① 헬스체크: HTTP GET /health:30080  (KR1용, KR2용 각각 1개)
+② Pool: kr1-active(우선순위 1) / kr2-standby(우선순위 2) — 각각 위 헬스체크 연결
+③ GSLB: chaosarena (라우팅 규칙 FAILOVER, TTL 30초) — 위 Pool 2개를 우선순위로 연결
+        → 자체 도메인 발급됨 (예: 60vo8ll7y2hd1g7ms4.toastgslb.com)
+④ DNS 레코드: www.chaosarena.cloud → CNAME → ③의 GSLB 도메인
+```
+
+**왜 CNAME으로 연결하는가**: GSLB 기능 자체가 "①②③"을 거쳐 **자기 자신의 도메인**을 하나 발급해준다.
+우리가 원하는 도메인(`www.chaosarena.cloud`)은 그 GSLB 도메인을 그냥 가리키기만(CNAME) 하면 된다.
+AWS Route53의 ALIAS 레코드, Azure Traffic Manager의 프로필 도메인과 같은 패턴이다 — "실제 라우팅
+로직은 GSLB 서비스 도메인 안에 숨어 있고, 우리 도메인은 그 앞단에 이름표만 붙이는 것"으로 이해하면 된다.
+
+**검증**: `scripts/06-test-gslb-failover.sh`로 실시간 감시하면서 KR1 파드를 `kubectl scale --replicas=0`
+으로 강제로 내렸더니, 약 80초 후 응답이 `kr1-test → kr2`로 자동 전환됐다. KR1을 다시 살리자 자동으로
+`kr1-test`로 되돌아오는 failback까지 확인했다.
 
 🎤 **발표 한 줄**: "파드 하나가 아니라 클러스터가 통째로 죽는 상황까지 대비하려고 두 리전에 클러스터를
-두고, GSLB가 살아있는 쪽으로 트래픽을 자동으로 넘기게 설계했습니다."
+두고, GSLB가 헬스체크로 살아있는 쪽을 판단해 DNS 자체를 바꿔치기하는 방식으로 트래픽을 자동으로
+넘기게 설계했습니다 — 실제로 KR1을 내려서 80초 만에 KR2로 넘어가는 것까지 검증했습니다."
 
 ---
 

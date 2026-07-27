@@ -187,6 +187,15 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **장애물 4(경미) — RBAC에 `watch` 누락으로 배포 단계 로그 스팸**: 파이프라인 자체는 성공했지만, `kubectl rollout status`가 내부적으로 Deployment를 `watch`하려다 권한이 없어 매 폴링마다 `Failed to watch ... forbidden` 에러를 로그에 남겼다(동작 자체는 폴링으로 대체되어 실패하지 않음). `jenkins-deploy-rbac.yaml`의 Role에 `watch` verb를 추가해 깨끗하게 해결.
 - **최종 검증**: push → GitHub Webhook → Kaniko 빌드+push(`chaos-arena:jenkins-N`) → cosign 서명(Rekor 기록) → `kubectl set image`+`rollout status` → KR2 파드 3개 전부 새 이미지로 교체 확인. `curl`로 앱 응답(200) 확인까지 사람 개입 없이 자동 완료.
 
+### 4.15 DNS Plus GSLB 구성 — Terraform 커버리지 밖의 콘솔 전용 기능 ⭐
+- **배경**: NHN DNS Plus 권한을 받은 뒤, 지금까지처럼 이 부분도 Terraform으로 코드화하려고 provider 스키마부터 확인했다.
+- **발견 — provider에 Zone/Recordset만 있고 GSLB(Pool/헬스체크/FAILOVER)는 없음**: `terraform providers schema -json`으로 `nhncloud` provider의 리소스를 뒤져보니 `nhncloud_dns_zone_v2`/`nhncloud_dns_recordset_v2`만 있었다. 필드를 보면 OpenStack Designate 호환의 **일반 DNS 관리 기능**일 뿐, GSLB의 핵심인 Pool·헬스체크·우선순위 기반 FAILOVER 정책 필드가 전혀 없다. **즉 GSLB 자체는 Terraform으로 다룰 수 없고 NHN 콘솔에서 직접 구성해야 하는 영역**이다 — 인터넷 게이트웨이 생성 리소스가 provider에 없었던 4.4절과 같은 종류의 한계.
+- **콘솔 UI 함정 — "DNS"와 "GSLB"가 완전히 다른 탭**: NHN Cloud 콘솔의 DNS Plus 서비스 안에 "DNS"(일반 Zone/레코드 관리)와 "GSLB"(Pool/헬스체크/GSLB 생성)가 서로 다른 최상위 탭으로 나뉘어 있다는 걸 모른 채로, "DNS → Zone → 레코드 세트 생성" 화면에서 GSLB용 레코드를 만들려다가 한참 헤맸다. 이 화면의 "레코드 세트 타입" 드롭다운(A/AAAA/CAA/CNAME/MX/NAPTR/PTR/TXT/SRV/NS)에는 애초에 GSLB 관련 타입이 없다 — **Pool/헬스체크/GSLB 생성은 전부 "GSLB" 탭에서, 그 결과로 만들어지는 GSLB 전용 도메인(예: `60vo8ll7y2hd1g7ms4.toastgslb.com`)을 "DNS" 탭에서 우리 도메인의 CNAME으로 연결**해야 완성된다. (AWS Route53 ALIAS나 Azure Traffic Manager와 비슷한 "서비스 자체 도메인 + CNAME 연결" 패턴)
+- **엔드포인트 주소 입력 함정**: Pool의 엔드포인트 주소 필드는 `IP:포트` 형식을 안 받는다(콜론이 허용 문자 목록에 없음, "영어 소문자와 숫자, '.', '-', '_'만 입력 가능"). IP만 넣어야 하며, 포트(`30080`, NodePort)는 헬스체크 설정 쪽에서 별도로 지정한다. 실제 서비스 접속 시에는 GSLB가 IP만 넘겨주므로, URL에 포트를 직접 붙여야 한다(`http://www.chaosarena.cloud:30080`).
+- **최종 구성**: Health Check(HTTP `/health`:30080) × 2 → Pool(`kr1-active` 우선순위1 / `kr2-standby` 우선순위2) × 2 → GSLB(`chaosarena`, 라우팅 규칙 FAILOVER, TTL 30초)에 두 Pool을 우선순위로 연결 → `www` CNAME을 GSLB 도메인으로 연결.
+- **최종 검증**: `scripts/06-test-gslb-failover.sh`로 실시간 모니터링하며 KR1 파드를 `kubectl scale --replicas=0`으로 강제로 내림 → **약 80초 후** 응답이 `kr1-test`에서 `kr2`로 자동 전환(failover) 확인 → KR1을 다시 `--replicas=1`로 복구하자 자동으로 `kr1-test`로 되돌아오는 failback까지 실측 확인. 가비아 네임서버 전파도 예상(1~4시간)보다 훨씬 빨리 완료됐다.
+- **알아둘 점**: TTL(30초)만으로 failover 속도가 결정되는 게 아니라, 헬스체크가 "몇 번 연속 실패해야 비정상으로 판단하는지" 기준까지 합쳐져서 실제 전환 시간(이번엔 약 80초)이 나온다 — TTL 값만 보고 전환 속도를 예단하면 안 된다.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -216,7 +225,7 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **Prometheus + Grafana 메트릭 스택** (KR2) — kube-prometheus-stack Helm 설치, `ServiceMonitor`로 앱의 `/metrics`(`app_requests_total`/`app_errors_total`/`app_response_time_seconds`) 연동, Grafana 대시보드(`ChaosArena App Metrics`) 구성
 - [x] **자체 대시보드 ↔ Prometheus 직접 연동** — Grafana를 iframe으로 끼워넣는 대신, Flask 앱이 Prometheus HTTP API(`/api/v1/query`)를 직접 호출해 `sum(rate(...))`로 파드 전체 합산 지표를 계산하는 `/api/metrics/cluster`를 추가. 기존 `/api/status`(응답한 파드 1대의 로컬 값이라 폴링마다 들쭉날쭉)와 대비되는 "클러스터 전체 기준" 지표를 같은 디자인 시스템 안에서 보여줌. `PROMETHEUS_URL` 미설정 시(KR1 등) 자동으로 "미연동" 표시로 우아하게 저하
 - [ ] KR1(판교) RAM 쿼터 확보 → `r2.c4m16`·워커 3대로 정식 재구축 → `deployment-kr1-test.yaml` → `deployment.yaml`(APP_VERSION=kr1) 전환
-- [ ] DNS Plus GSLB failover 구성 + 검증 (`scripts/06`, 도메인 `www.chaosarena.cloud` 확보됨, NHN DNS Plus 권한 대기 중)
+- [x] **DNS Plus GSLB failover 구성 + 검증 완료** ⭐ — Zone 생성 → 가비아 네임서버를 NHN으로 위임 → Pool(`kr1-active` 우선순위1/`kr2-standby` 우선순위2) + 헬스체크(`/health`) → GSLB(FAILOVER, TTL 30초) 생성 후 Pool 연결 → `www` CNAME을 GSLB 도메인으로 연결. `scripts/06`으로 KR1 파드를 강제로 내려 실제 failover(약 80초 소요, `kr1-test`→`kr2`)와 복구 후 failback을 둘 다 실측 검증 (4.15절)
 - [x] **AlertManager 알림 규칙(파드 다운/CPU/에러율) + Slack 라우팅** — `PrometheusRule`(release 라벨 필요, 4.11 교훈 적용) + Alertmanager Slack 연동. 3단 실패(helm --reuse-values 함정 / Secret 네임스페이스 불일치 / null receiver 삭제로 인한 reconcile 전체 실패)를 로그 기반으로 하나씩 좁혀 해결 (4.12절). `ChaosDemoHighCPU` 알림이 실제로 파드명까지 템플릿 치환되어 Slack 도착 확인
 - [x] **Jenkins CI/CD** ⭐ — KR2 클러스터 내부(Pod)에 Helm으로 설치(hostPath PV로 영속화), `jenkins-deployer` RBAC,
   GitHub Webhook + Pipeline Job(`infra/k8s-setup` 브랜치), Jenkinsfile(Kaniko 빌드+push → cosign 서명 → kubectl

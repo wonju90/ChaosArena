@@ -33,18 +33,29 @@ spec:
       # ncr-secret은 마스터 노드에서 kubectl create secret docker-registry로 미리 생성해둔다.
       imagePullSecrets:
         - name: ncr-secret
-      # 워커 노드가 정확히 3대이므로, replica 3개가 서로 다른 노드에 하나씩
-      # 배치되도록 강제한다. (대시보드의 "노드별 파드 그룹" 화면이 이 분산에 의존한다)
+      # 워커 노드가 정확히 3대라, replicas=3일 땐 노드당 1개씩 퍼지는 걸 "선호"한다.
+      # HPA 도입 전엔 required(강제)였는데, 그러면 HPA가 4개 이상으로 늘리려 할 때
+      # 노드 3대에 이미 파드가 하나씩 있어서 4번째가 영원히 Pending으로 막혀버린다.
+      # preferred로 완화해서, 평소엔 그대로 노드당 1개로 퍼지되 HPA가 늘릴 때만
+      # 한 노드에 여러 개가 뜨는 걸 허용한다.
       affinity:
         podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchLabels:
-                  app: chaos-demo
-              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: chaos-demo
+                topologyKey: kubernetes.io/hostname
       containers:
+        # 주의: Jenkins가 배포 때마다 `kubectl set image`로 이 필드를 직접 덮어쓴다(태그는
+        # jenkins-${BUILD_NUMBER}). 그래서 이 파일의 태그는 곧 최신 배포보다 뒤처지게 되고,
+        # 다른 필드(affinity 등)만 고치려고 이 파일을 그대로 apply하면 이미지가 여기 적힌
+        # 옛날 태그로 조용히 롤백된다 — HPA 작업 때 실제로 겪은 실수. 이 파일을 손으로 apply하기
+        # 전엔 항상 `kubectl get deployment chaos-demo -o jsonpath='{.spec.template.spec.containers[0].image}'`
+        # 로 현재 실제 태그를 먼저 확인해서 맞춰두거나, apply 직후 `kubectl set image`로 복구할 것.
         - name: chaos-demo
-          image: "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena:v4" # NCR(비공개 레지스트리)
+          image: "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena:jenkins-12" # NCR(비공개 레지스트리)
           # 기본값(IfNotPresent)은 태그가 같으면 로컬 캐시를 그대로 써버려서, 태그를 안 바꾸고
           # 재빌드/재서명해도 노드가 새 이미지를 못 본다. 매번 레지스트리에서 실제로 확인하게 강제.
           imagePullPolicy: Always

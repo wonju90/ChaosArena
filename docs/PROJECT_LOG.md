@@ -253,6 +253,37 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   뭘 하는지)을 확인하는 게 중요하다 — 겉보기엔 "이미지 버전이 최신으로 갱신되나보다" 정도로 넘어갈 수
   있었지만, 실제로는 운영 중인 서버를 통째로 밀어버리는 위험한 동작이었다.
 
+### 4.18 HPA 도입 — "노드당 파드 1개" 강제 규칙이 스케일 아웃을 막던 문제 + 적용 중 겪은 실수 2건 ⭐
+- **배경**: 선택 기능 목록에 있던 HPA(오토스케일링)를 KR2 `chaos-demo`에 도입. `resources.requests/limits`와
+  `metrics-server`는 이미 준비돼 있어서(우연히) 바로 HPA 매니페스트만 있으면 될 줄 알았다.
+- **막힌 지점**: `k8s/deployment.yaml`의 `podAntiAffinity`가 `requiredDuringSchedulingIgnoredDuringExecution`
+  (강제)로 "노드당 파드 1개"를 걸고 있었는데, 워커가 정확히 3대뿐이라 HPA가 4번째 파드를 만들려는 순간
+  이미 노드 3대 전부 파드가 하나씩 있어서 4번째가 영원히 `Pending`에 걸린다 — HPA가 "6개로 늘리자"고
+  결정은 해도 실제로는 하나도 안 늘어나는, 겉으로 안 보이는 반쪽짜리 기능이 될 뻔했다.
+  `requiredDuringScheduling` → `preferredDuringScheduling`(weight 100)으로 완화해서, 평소엔 그대로
+  노드당 1개로 퍼지되 HPA가 늘릴 때만 한 노드에 여러 개를 허용하도록 고쳤다.
+- **`minReplicas=3` 고정 이유**: `app.py`의 `EXPECTED_REPLICAS=3` 기반 미션 완료 판정과 절대 어긋나지
+  않도록, HPA가 3 밑으로는 절대 못 내려가게 설계(위로만 6까지 확장).
+- **적용 중 실수 ① — 이미지 태그가 조용히 롤백됨**: anti-affinity만 고치려고
+  `kubectl apply -f k8s/deployment.yaml`을 그대로 실행했는데, 이 파일엔 예전 이미지 태그(`v4`)가
+  하드코딩돼 있었다. Jenkins는 `kubectl set image`로 운영 중인 Deployment를 직접(imperative) 패치하기
+  때문에 파일(git)과 실제 클러스터가 어긋나 있었고, `apply`가 그 차이를 "되돌려야 할 변경"으로 보고
+  최신 빌드(jenkins-12)를 옛날 이미지로 덮어써버렸다. `kubectl set image`로 즉시 복구하고, 파일 태그도
+  최신으로 맞춘 뒤 "이 필드는 Jenkins가 덮어쓰니 손으로 apply하기 전엔 먼저 현재 태그를 확인할 것"이라는
+  경고 주석을 남겼다.
+- **적용 중 실수 ② — 스케줄러가 낡은 이벤트를 붙잡고 재시도를 안 함**: 파드 하나가 `Pending`에서 안
+  풀려서 봤더니, 이미 자리가 빈 노드가 있는데도 몇 분 전(다른 노드가 아직 안 비었을 때) 시점의 낡은
+  `FailedScheduling` 이벤트만 있고 재시도 흔적이 없었다. 해당 파드를 삭제하니 ReplicaSet이 새로 만든
+  파드가 현재 클러스터 상태 기준으로 바로 정상 스케줄됐다 — 스케줄러가 재시도 안 하는 것처럼 보이면
+  막힌 파드를 지우고 새로 만들게 하는 게 빠른 우회법.
+- **최종 검증(실측)**: `k8s/hpa.yaml` 적용 후 평소 `cpu: 11%/50%`(replicas 3, 노드당 1개) → 기존 "CPU
+  부하" 버튼 On → `109%/50%`→`175%/50%`로 오르며 **실제로 3→6 스케일 아웃**(노드당 2개로 균등 분산) →
+  버튼 Off 후 CPU 7%로 떨어졌지만 기본 5분 안정화 창 때문에 곧바로 안 줄고, 5분 뒤 **실제로 6→3 스케일
+  다운**(`cpu: 10%/50%`, 노드당 1개로 재정렬)까지 확인.
+- **알아둘 점**: CPU 부하 토글(`/chaos/cpu`)은 그 요청을 받은 파드 하나의 메모리 상태만 바꾸는 구조라,
+  replicas가 6개로 늘어난 뒤엔 버튼을 반복 눌러도 매번 다른 파드가 걸릴 수 있다 — 검증 때는 각 파드
+  IP에 직접 `/chaos/recover`를 호출해 확실하게 전부 껐다(고칠 필요는 없는, 알아두면 좋은 특성).
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -312,6 +343,10 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   **실제 KR2 프로덕션에서도 검증 완료** — push 도중 Jenkins가 CrashLoopBackOff로 죽어있던 걸 발견해
   복구하고(4.16절) build #11을 수동 트리거, 실제 파이프라인 소요시간 42초로 S랭크가 뜨는 것까지 확인.
 - [x] **NCR 이미지 서명(cosign) 도입 + content-trust 정책 재활성화** — 3중 장애물(cosign 최신버전 호환성/attestation 매니페스트/스테일 이미지 캐시)을 순서대로 해결, 서명된 이미지가 정책 재활성화 상태에서 정상 pull됨을 실제로 검증 (4.13절)
+- [x] **HPA(오토스케일링) 도입** ⭐ — `k8s/hpa.yaml`(minReplicas 3/maxReplicas 6/CPU 목표 50%)로 KR2
+  `chaos-demo`에 적용. 강제였던 podAntiAffinity를 preferred로 완화해 "노드당 파드 1개" 규칙이 스케일
+  아웃을 막던 문제를 해결하고, 기존 "CPU 부하" 버튼을 그대로 트리거로 재사용해 실제 3→6 스케일 아웃 →
+  5분 안정화 창 후 6→3 스케일 다운까지 전체 라이프사이클 실측 검증 (4.18절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---
@@ -324,7 +359,7 @@ ChaosArena/
 ├── templates/              # base/game/monitor/records/cicd (Jinja2 상속)
 ├── Dockerfile
 ├── requirements.txt
-├── k8s/                    # rbac, deployment, service(lb/nodeport), metallb, secret 예시
+├── k8s/                    # rbac, deployment, hpa, service(lb/nodeport), metallb, secret 예시
 ├── scripts/                # 01~05 클러스터 구축 + 06 GSLB failover 테스트
 ├── terraform/
 │   ├── providers.tf        # kr1/kr2 provider (Keystone v3)

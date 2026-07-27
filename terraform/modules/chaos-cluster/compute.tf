@@ -44,10 +44,15 @@ resource "nhncloud_networking_port_v2" "worker_port" {
   }
 }
 
+# image_id는 일부러 안 준다: block_device로 boot-from-volume 하면 Nova API는 서버 자체의
+# image 참조를 비워두는데(볼륨이 이미지에서 만들어진 것이지 서버가 아니므로), 이 프로바이더는
+# 그 상태를 image_id="Attempt to boot from volume - no image supplied"로 state에 저장한다.
+# 여기에 image_id를 직접 지정해두면 plan마다 그 문자열과 실제 이미지 UUID가 달라 보여서 매번
+# "변경 있음"으로 뜨고, apply하면 image_id 변경 시 이 프로바이더가 실제로 servers.Rebuild()를
+# 호출해 기존 서버를 새 이미지로 재설치해버린다(디스크 내용 전부 날아감) — 4.16절 드리프트 사고 원인.
 resource "nhncloud_compute_instance_v2" "master" {
   name              = "ChaosArena-master-${var.cluster_label}"
   key_pair          = nhncloud_compute_keypair_v2.kp.name
-  image_id          = data.nhncloud_images_image_v2.os.id
   flavor_id         = data.nhncloud_compute_flavor_v2.flavor.id
   availability_zone = var.availability_zone
 
@@ -69,7 +74,6 @@ resource "nhncloud_compute_instance_v2" "worker" {
   count             = local.worker_count
   name              = "ChaosArena-worker${count.index + 1}-${var.cluster_label}"
   key_pair          = nhncloud_compute_keypair_v2.kp.name
-  image_id          = data.nhncloud_images_image_v2.os.id
   flavor_id         = data.nhncloud_compute_flavor_v2.flavor.id
   availability_zone = var.availability_zone
 

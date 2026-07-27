@@ -196,6 +196,63 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **최종 검증**: `scripts/06-test-gslb-failover.sh`로 실시간 모니터링하며 KR1 파드를 `kubectl scale --replicas=0`으로 강제로 내림 → **약 80초 후** 응답이 `kr1-test`에서 `kr2`로 자동 전환(failover) 확인 → KR1을 다시 `--replicas=1`로 복구하자 자동으로 `kr1-test`로 되돌아오는 failback까지 실측 확인. 가비아 네임서버 전파도 예상(1~4시간)보다 훨씬 빨리 완료됐다.
 - **알아둘 점**: TTL(30초)만으로 failover 속도가 결정되는 게 아니라, 헬스체크가 "몇 번 연속 실패해야 비정상으로 판단하는지" 기준까지 합쳐져서 실제 전환 시간(이번엔 약 80초)이 나온다 — TTL 값만 보고 전환 속도를 예단하면 안 된다.
 
+### 4.16 Jenkins 파드 CrashLoopBackOff — 같은 파드 안 emptyDir이 재시도를 거듭하며 오염 ⭐
+- **증상**: CI/CD 전용 탭 기능을 push했는데 KR2 앱이 계속 이전 빌드(#10)만 응답. GitHub 웹훅은 200을 반환했다는
+  기록이 있었지만, 실제로는 그 시점에 Jenkins 자체가 죽어있었다.
+- **진단**: `kubectl -n jenkins get pods`로 `jenkins-0`가 `0/2 Unknown`(28시간째)인 걸 확인. `describe pod`로
+  보니 컨테이너 상태가 `CrashLoopBackOff`였고, 원인은 `init` 컨테이너(플러그인을 `/var/jenkins_plugins`
+  emptyDir로 복사하는 단계)가 27번 연속 재시작 중이었다. 로그를 보니 `cp: overwrite '...jpi'?` 프롬프트가
+  플러그인 파일마다 떠 있었다 — GNU `cp`는 대상 파일에 쓰기 권한이 없으면 `-i` 없이도 자동으로 덮어쓸지
+  묻는데, 이 확인이 표준입력으로 들어오길 기다리다가 그대로 실패(exit 1)한 것이다.
+- **근본 원인**: `jenkins-0`는 StatefulSet 파드라 컨테이너가 몇 번을 재시작해도 **파드 자체는 그대로**라서,
+  `plugin-dir`(emptyDir) 볼륨도 파드 수명 내내 유지된다. 첫 실행에서 이미 플러그인을 다 복사해놨는데,
+  그 다음 재시작(원인은 별개 — 아마 노드/리소스 이벤트로 컨테이너가 한 번 죽은 것)마다 init 컨테이너가
+  똑같은 파일을 그 위에 다시 복사하려다가 "이미 있고 쓰기 권한 없음" 상태에 걸려 실패 → 실패하면 kubelet이
+  다시 재시작 → 또 같은 자리에서 실패, 그대로 자기 자신을 되풀이하는 크래시 루프가 된 것.
+- **해결**: `kubectl -n jenkins delete pod jenkins-0` — StatefulSet이 완전히 새 파드(새 emptyDir, 빈 상태에서
+  시작)를 만들어주므로 약 80초 만에 `2/2 Running`으로 정상 복귀. Jenkins의 영구 데이터(Job 설정, 빌드 이력)는
+  hostPath PV(`jenkins-home`)에 있어서 이 삭제로 전혀 영향받지 않았다.
+- **후속 조치 — 놓친 웹훅 수동 복구**: Jenkins가 죽어있던 동안 도착한 GitHub 웹훅은 이미 유실되어 자동으로
+  재시도되지 않는다. Jenkins가 복구된 뒤, `jenkins` 시크릿에서 admin 비밀번호를 꺼내 REST API(크럼(CSRF
+  토큰) 발급 → `POST /job/chaos-demo-cicd/build`)로 빌드를 수동 트리거해서 마무리했다. build #11이
+  SUCCESS로 끝났고, 실제 파이프라인 소요시간(42초)이 처음으로 실측되어 `DEPLOY_RANK_THRESHOLDS`(S≤90초)
+  가 합리적인 범위였음도 같이 확인됐다(11.7절).
+- **알아둘 점**: StatefulSet 파드는 "재시작해도 같은 파드"라는 성질이 있어서, 컨테이너 재시작 이력이
+  emptyDir 상태에 누적될 수 있다는 걸 이번에 알게 됐다. 파드가 오래 살아있는데 특정 초기화 단계가
+  반복 실패한다면, 그 단계가 "이전 실행의 흔적이 남아있는 상태"를 전제로 짜여있는지 의심해볼 것.
+
+### 4.17 KR1 Terraform state drift 진짜 원인 — `image_id` + boot-from-volume 조합이 매번 서버 재설치를 부를 뻔함 ⭐
+- **배경**: 4.x 이전(07-26)에 `admin_cidr`만 바꾸려고 `terraform plan`을 돌렸는데, 관계없어 보이는 KR1 워커 2대
+  생성 + KR2 인스턴스 4대의 `image_id` in-place 업데이트가 같이 떴다. 원인을 모른 채 `-target`으로 보안그룹
+  리소스만 scoped apply하고, 원인 파악 전까지 **일반(비-target) apply를 금지**해뒀었다.
+- **조사 — 실제로 뭐가 바뀌려던 건지 `terraform plan` 출력을 그대로 읽음**: `image_id` 필드가
+  `"Attempt to boot from volume - no image supplied"` → `<실제 이미지 UUID>`로 바뀌는 것으로 나왔다.
+  이 문자열 자체가 단서였다 — 진짜 UUID가 아니라 사람이 읽으라고 써놓은 에러/설명 문구가 **state에 그대로
+  저장돼 있었다**는 뜻이었다.
+- **원인 확정 — 프로바이더 소스 코드까지 읽어서 확인**: `modules/chaos-cluster/compute.tf`가
+  `nhncloud_compute_instance_v2`에 `image_id`를 직접 지정하면서 동시에 `block_device`로
+  boot-from-volume도 쓰고 있었다. `terraform providers schema`로는 `image_id`가 `ForceNew: false`라는
+  것만 보이고 "그래서 뭐가 위험한지"는 안 보여서, `gh api`로 프로바이더(`nhn-cloud/terraform-provider-nhncloud`)
+  깃허브 소스(`resource_openstack_compute_instance_v2.go`)를 직접 받아 확인했다.
+  - Read 함수: boot-from-volume 서버는 Nova API가 서버 자체의 이미지 참조를 안 주기 때문에(볼륨이 이미지로
+    만들어진 것이지 서버가 아니라서), 이 프로바이더는 `image_id`를 그냥 `"Attempt to boot from volume -
+    no image supplied"` 문자열로 state에 저장해버린다.
+  - Update 함수: `image_id`가 바뀐 것으로 감지되면 `servers.Rebuild()`(Nova Rebuild API)를 호출한다 —
+    **기존 서버를 새 이미지로 재설치**하는 진짜 파괴적인 동작이다(디스크 내용 전부 날아감).
+  - 즉, config에 `image_id`를 직접 넣어둔 이상 **매 plan마다 저 가짜 문자열과 실제 이미지 UUID가 달라
+    보여서 영원히 "변경 있음"으로 뜨고**, 만약 그 상태로 apply했다면 이미 정상 운영 중인 KR2 인스턴스 4대와
+    KR1 워커까지 전부 `Rebuild()`로 재설치되어 쿠버네티스 클러스터가 통째로 날아갔을 것이다.
+- **해결**: `compute.tf`의 `master`/`worker` 리소스에서 top-level `image_id` 인자를 제거(`block_device.uuid`만
+  남김) — boot-from-volume을 쓸 땐 이게 이 프로바이더의 올바른 사용법이다. 수정 후 `terraform plan`으로
+  재확인하니 `image_id` 관련 diff 6개가 전부 사라지고 `Plan: 2 to add, 0 to change, 0 to destroy`만 남았다.
+- **남은 "2 to add"는 별개의, 이미 알고 있던 이슈**: `worker_count = 3`이 고정값인데 KR1은 RAM 쿼터 부족으로
+  워커 1대(`worker3`)만 성공적으로 만들어진 상태라 나머지 2대가 항상 "생성 예정"으로 뜨는 것 — 코드 버그가
+  아니라 KR1 정식 재구축(현재 진행 상황 5절 항목) 전까지는 그대로 둬야 하는 정상적인 pending 상태.
+- **알아둘 점**: Terraform plan에 이상한 diff가 뜨면 "무슨 리소스가 왜 바뀌는지"까지만 보고 넘어가지 말고,
+  값 자체(이번엔 사람이 읽는 에러 문자열)를 근거로 프로바이더 소스까지 내려가서 실제 API 호출(Update가
+  뭘 하는지)을 확인하는 게 중요하다 — 겉보기엔 "이미지 버전이 최신으로 갱신되나보다" 정도로 넘어갈 수
+  있었지만, 실제로는 운영 중인 서버를 통째로 밀어버리는 위험한 동작이었다.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -224,6 +281,11 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **Slack 알림 연동** — Incoming Webhook + k8s Secret(`slack-webhook`). 앱 코드(`send_slack_message`)는 이미 준비돼 있었고 Webhook 등록만 하면 즉시 동작
 - [x] **Prometheus + Grafana 메트릭 스택** (KR2) — kube-prometheus-stack Helm 설치, `ServiceMonitor`로 앱의 `/metrics`(`app_requests_total`/`app_errors_total`/`app_response_time_seconds`) 연동, Grafana 대시보드(`ChaosArena App Metrics`) 구성
 - [x] **자체 대시보드 ↔ Prometheus 직접 연동** — Grafana를 iframe으로 끼워넣는 대신, Flask 앱이 Prometheus HTTP API(`/api/v1/query`)를 직접 호출해 `sum(rate(...))`로 파드 전체 합산 지표를 계산하는 `/api/metrics/cluster`를 추가. 기존 `/api/status`(응답한 파드 1대의 로컬 값이라 폴링마다 들쭉날쭉)와 대비되는 "클러스터 전체 기준" 지표를 같은 디자인 시스템 안에서 보여줌. `PROMETHEUS_URL` 미설정 시(KR1 등) 자동으로 "미연동" 표시로 우아하게 저하
+- [x] **KR1 Terraform state drift 원인 규명 + 수정** ⭐ — `image_id` + boot-from-volume 조합이 매 plan마다
+  거짓 diff를 만들고, apply 시 운영 중인 서버를 `servers.Rebuild()`로 통째로 재설치할 뻔한 게 진짜 원인이었다.
+  프로바이더 소스 코드까지 확인해 근본 원인을 확정하고 `compute.tf`에서 중복 `image_id` 지정을 제거해 해결.
+  수정 후 `terraform plan` 결과 `2 to add, 0 to change, 0 to destroy`만 남아 **일반 apply가 다시 안전해짐**
+  (남은 "2 to add"는 KR1 RAM 쿼터 문제로 아래 항목이 해결되기 전까진 그대로 둘 것) (4.17절)
 - [ ] KR1(판교) RAM 쿼터 확보 → `r2.c4m16`·워커 3대로 정식 재구축 → `deployment-kr1-test.yaml` → `deployment.yaml`(APP_VERSION=kr1) 전환
 - [x] **DNS Plus GSLB failover 구성 + 검증 완료** ⭐ — Zone 생성 → 가비아 네임서버를 NHN으로 위임 → Pool(`kr1-active` 우선순위1/`kr2-standby` 우선순위2) + 헬스체크(`/health`) → GSLB(FAILOVER, TTL 30초) 생성 후 Pool 연결 → `www` CNAME을 GSLB 도메인으로 연결. `scripts/06`으로 KR1 파드를 강제로 내려 실제 failover(약 80초 소요, `kr1-test`→`kr2`)와 복구 후 failback을 둘 다 실측 검증 (4.15절)
 - [x] **AlertManager 알림 규칙(파드 다운/CPU/에러율) + Slack 라우팅** — `PrometheusRule`(release 라벨 필요, 4.11 교훈 적용) + Alertmanager Slack 연동. 3단 실패(helm --reuse-values 함정 / Secret 네임스페이스 불일치 / null receiver 삭제로 인한 reconcile 전체 실패)를 로그 기반으로 하나씩 좁혀 해결 (4.12절). `ChaosDemoHighCPU` 알림이 실제로 파드명까지 템플릿 치환되어 Slack 도착 확인
@@ -247,6 +309,8 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   로컬(Playwright)에서 빌드 7→8(C랭크)→9(S)→10(S, 2연속 콤보) 전환 시나리오를 재현해 랭크/게이지/콤보
   갱신과 리빌 연출까지 스크린샷으로 검증 (docs/CONCEPTS.md 11.7절). 다회차 배포 이력("퀘스트 로그")은
   이 앱 파드 자체가 배포마다 재시작되는 구조상 영속 저장소(Redis/DB) 없이는 못 쌓아서 의도적으로 보류.
+  **실제 KR2 프로덕션에서도 검증 완료** — push 도중 Jenkins가 CrashLoopBackOff로 죽어있던 걸 발견해
+  복구하고(4.16절) build #11을 수동 트리거, 실제 파이프라인 소요시간 42초로 S랭크가 뜨는 것까지 확인.
 - [x] **NCR 이미지 서명(cosign) 도입 + content-trust 정책 재활성화** — 3중 장애물(cosign 최신버전 호환성/attestation 매니페스트/스테일 이미지 캐시)을 순서대로 해결, 서명된 이미지가 정책 재활성화 상태에서 정상 pull됨을 실제로 검증 (4.13절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 

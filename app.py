@@ -408,7 +408,7 @@ def cicd_page():
 @app.route("/health")
 def health():
     """K8s Liveness/Readiness Probe가 호출하는 헬스체크 엔드포인트."""
-    return jsonify({"status": "ok"}), 200
+    return jsonify({"status": "error"}), 500
 
 
 @app.route("/metrics")

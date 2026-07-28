@@ -433,6 +433,33 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **검증**: 우선순위 변경 직후(TTL 30초) `dig +short www.chaosarena.cloud` → `114.110.162.53`(KR2 마스터
   공인IP) 확인. 트래픽이 실제로 KR2로 전환된 것을 확인.
 
+### 4.25 Jenkins 자동 롤백 — 배포 후 헬스체크 실패 시 이전 버전으로 자동 복구
+- **배경**: "다음 작업 리스트업"에서 선택한 항목. 지금까지는 Jenkins가 `ChaosArena-manifests`에 새
+  이미지 태그를 커밋+push하는 순간 빌드가 SUCCESS로 끝났다 — 그 이미지가 실제로 클러스터에서 건강하게
+  뜨는지는 아무도 확인하지 않았다.
+- **방식 결정**: Argo Rollouts(카나리+자동분석을 지원하는 업계 표준 도구) 대신 **가벼운 자체 구현**을
+  택함 — 새 CRD/컨트롤러 없이, 기존 Jenkinsfile에 `Verify Deployment` 스테이지 하나만 추가. 사용자가
+  프로젝트 규모 대비 학습·설명 부담이 적은 쪽을 선택.
+- **새 크레덴셜 없이 배포 상태를 확인하는 방법**: Jenkins는 GitOps 전환(4.22절) 때 클러스터 접근
+  권한을 의도적으로 전부 제거했다. 여기서 kubectl이나 ArgoCD API 접근 권한을 새로 추가하면 그 원칙이
+  무너진다. 그래서 앱이 이미 갖고 있는 `/api/status`를 **클러스터 내부 Service DNS**
+  (`http://chaos-demo-nodeport.default.svc.cluster.local/api/status`)로 직접 호출하는 방식을 택했다 —
+  순수 네트워크 호출이라 새 권한이 전혀 필요 없고, GSLB가 어느 리전을 Active로 보고 있는지와도
+  무관하다(4.24절의 GSLB 상태에 의존하지 않음).
+- **`/health`가 아니라 `build_number`를 확인하는 이유**: 롤링 업데이트(`maxSurge:0/maxUnavailable:1`)
+  중엔 구버전 파드가 아직 살아있어서 `/health`는 계속 200을 준다. `/api/status`의 `build_number`가
+  방금 push한 빌드 번호와 실제로 일치하는지까지 확인해야 "새 버전이 진짜 응답 중"이라는 게 증명된다.
+- **롤백 구현**: `Update Manifests Repo` 스테이지에서 새 값을 쓰기 직전에 이전 값(이미지 태그,
+  `BUILD_NUMBER`/`GIT_COMMIT`/`DEPLOY_DURATION_SECONDS`)을 `yq eval`(읽기)로 캡처해 워크스페이스에
+  `rollback-info.env` 파일로 저장. `Verify Deployment`가 10초 간격 최대 12회(약 2분) 폴링 후에도
+  `build_number`가 안 바뀌면, 그 파일을 `source`하고 yq의 `strenv()` 함수로 이전 값을 다시 써넣어
+  `"ROLLBACK: ..."` 커밋을 push한다 — 롤백도 클러스터를 직접 안 건드리고 Git 커밋 하나로 처리된다
+  (GitOps 원칙이 롤백에도 그대로 적용).
+- **빌드 결과**: 롤백이 발생하면 `error()`로 파이프라인을 **FAILURE**로 마킹 — 롤백 자체는 성공해도
+  "이 배포는 실패했다"는 신호가 Jenkins 화면에 바로 보이게 함.
+- **변경 파일**: `Jenkinsfile`만 수정(새 인프라 설치 없음) — `Update Manifests Repo` 스테이지에 이전값
+  캡처 로직 추가, 새 `Verify Deployment` 스테이지 추가.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -511,6 +538,10 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   Git 선언 상태로 전환 (4.22절). **Jenkins→Git→ArgoCD→클러스터 전체 파이프라인 end-to-end 실측
   검증 완료**(build #17 SUCCESS, ArgoCD Synced/Healthy, 배포된 이미지 태그 일치 확인). 검증 중 겪은
   에이전트 TCP 포트 바인딩 레이스 + K8s Service 고정 포트 불일치 트러블슈팅은 4.23절 참고
+- [ ] **Jenkins 자동 롤백** — 배포 후 `/api/status`의 `build_number`로 새 버전 반영을 확인하고, 약
+  2분 내에 안 바뀌면 이전 버전으로 되돌리는 커밋을 자동 push. 새 크레덴셜 없이 클러스터 내부 Service
+  DNS만으로 확인(4.25절). `Jenkinsfile` 코드 반영 완료, 실제 헬스체크 실패 상황을 만들어 롤백이 도는지
+  검증은 대기 중
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

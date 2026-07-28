@@ -599,6 +599,24 @@ kubectl get deployment chaos-demo -o jsonpath='{.spec.template.spec.containers[0
 
 기존 접속 경로(`:30080`, 포트 없는 80, `www.<본인도메인>`)도 전부 회귀 없이 그대로 동작하는지 확인.
 
+### 9.7 자동 롤백 (참고) — 새 설치 없이 Jenkinsfile만으로 동작
+
+Jenkinsfile에 `Verify Deployment` 스테이지가 이미 추가돼 있다(코드 반영 완료, 새로 설치할 인프라
+없음). 배포 후 앱의 `/api/status`(클러스터 내부 Service DNS로 직접 호출)에서 `build_number`가 방금
+push한 빌드 번호로 바뀌는지 약 2분간 확인하고, 안 바뀌면 자동으로 이전 버전으로 되돌리는 커밋을
+push한다. 자세한 설계 이유는 `docs/CONCEPTS.md` 17절 참고.
+
+**직접 확인해보는 법** — 일부러 헬스체크가 실패하는 변경을 하나 만들어서 push해보면 된다:
+```bash
+# 예: app.py의 /health 핸들러를 잠깐 500을 반환하도록 바꿔서 커밋+push
+git commit --allow-empty -m "test: 자동 롤백 검증용 (실제로는 /health를 깨는 변경)"
+```
+Jenkins 빌드는 `Update Manifests Repo`까지 SUCCESS로 진행되지만(이미지 빌드 자체는 문제없으니까),
+`Verify Deployment`에서 새 `build_number`가 안 나타나 타임아웃되고, `ChaosArena-manifests`에
+`ROLLBACK: ...` 커밋이 자동으로 생기는지, ArgoCD가 그걸 감지해 이전 이미지로 되돌리는지, Jenkins
+빌드가 최종적으로 FAILURE(빨간 배지)로 끝나는지 확인한다. 확인 후엔 `/health`를 원래대로 되돌리는
+커밋을 잊지 말고 push할 것.
+
 ---
 
 ## 다음에 추가될 내용 (아직 미착수)

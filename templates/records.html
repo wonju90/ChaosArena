@@ -31,10 +31,26 @@
   .podium-medal { font-size: 34px; }
   .podium-card.rank-1 .podium-medal { font-size: 46px; }
   .podium-seconds { font-size: 22px; font-weight: 800; margin-top: 8px; font-variant-numeric: tabular-nums; }
-  .podium-empty { flex: 1; text-align: center; color: #64748b; font-size: 13px; padding: 24px 10px; }
+  .podium-empty { flex: 1; }
 
   #history-canvas-wrap { position: relative; height: 200px; margin-top: 8px; }
-  .history-empty { color: #64748b; font-size: 14px; padding: 24px 0; text-align: center; }
+
+  /* 빈 상태 — "고장난 화면"이 아니라 "아직 안 해본 것뿐"임을 분명히 전달한다 */
+  .records-empty-state {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    padding: 34px 16px 30px; text-align: center;
+  }
+  .records-empty-icon {
+    font-size: 40px; opacity: 0.55; filter: grayscale(0.15);
+  }
+  .records-empty-text { font-size: 13.5px; color: #8593a8; line-height: 1.6; max-width: 300px; }
+  .records-empty-cta {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 4px;
+    padding: 7px 16px; border-radius: 999px; font-size: 12.5px; font-weight: 700;
+    background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.35); color: #38bdf8;
+    text-decoration: none; transition: background 0.15s, transform 0.15s;
+  }
+  .records-empty-cta:hover { background: rgba(56,189,248,0.22); transform: translateY(-1px); }
 
   #btn-reset-records {
     background: rgba(127,29,29,0.35); color: #fca5a5;
@@ -80,7 +96,11 @@
     <div class="panel">
       <h2 class="panel-title">{{ ic.i('trophy') }} 하이스코어 보드</h2>
       <div id="podium-row" class="podium-row">
-        <div class="podium-empty">아직 기록이 없습니다</div>
+        <div class="podium-empty records-empty-state">
+          <div class="records-empty-icon">🏆</div>
+          <div class="records-empty-text">아직 하이스코어가 없습니다. 게임 콘솔에서 장애를 복구해 첫 기록을 세워보세요.</div>
+          <a href="/" class="records-empty-cta">🎮 게임 콘솔로 이동 →</a>
+        </div>
       </div>
     </div>
 
@@ -89,7 +109,11 @@
         <h2 class="panel-title" style="margin:0;">{{ ic.i('bars') }} 최근 복구 기록 <span class="text-faint normal-case tracking-normal">· 빠를수록 좋음</span></h2>
         <button id="btn-reset-records" onclick="resetRecords()">🗑 기록 초기화</button>
       </div>
-      <div id="history-empty" class="history-empty">아직 기록이 없습니다</div>
+      <div id="history-empty" class="records-empty-state">
+        <div class="records-empty-icon">📊</div>
+        <div class="records-empty-text">아직 복구 기록이 없습니다. 미션을 완료하면 여기 그래프가 채워집니다.</div>
+        <a href="/" class="records-empty-cta">🎮 게임 콘솔로 이동 →</a>
+      </div>
       <div id="history-canvas-wrap" style="display:none;"><canvas id="history-chart"></canvas></div>
     </div>
   </div>
@@ -125,10 +149,17 @@ const barLabelPlugin = {
   },
 };
 
+const PODIUM_EMPTY_HTML = `
+  <div class="podium-empty records-empty-state">
+    <div class="records-empty-icon">🏆</div>
+    <div class="records-empty-text">아직 하이스코어가 없습니다. 게임 콘솔에서 장애를 복구해 첫 기록을 세워보세요.</div>
+    <a href="/" class="records-empty-cta">🎮 게임 콘솔로 이동 →</a>
+  </div>`;
+
 function renderPodium(leaderboard) {
   const row = document.getElementById('podium-row');
   if (!leaderboard || leaderboard.length === 0) {
-    row.innerHTML = '<div class="podium-empty">아직 기록이 없습니다</div>';
+    row.innerHTML = PODIUM_EMPTY_HTML;
     return;
   }
   row.innerHTML = leaderboard.map(entry => `

@@ -371,6 +371,51 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **작업 방식 변화**: 사용자가 "인프라를 직접 실행해보며 배우고 싶다"고 요청해서, ArgoCD 설치·새
   GitHub 레포 생성·Jenkins credential 등록 같은 실행형 작업은 이번부터 `docs/SETUP_GUIDE.md`에
   가이드로만 제시하고 직접 실행은 안 함(코드/설정 파일 편집만 담당).
+- **최종 실측 검증 완료** ⭐ — 더미 커밋 push → Jenkins build #17이 SUCCESS로 끝나고
+  `ChaosArena-manifests`에 새 커밋(`d8aed29`) 생성 → `kubectl -n argocd get application chaos-demo`가
+  `Synced`/`Healthy` → `kubectl get deployment chaos-demo`의 이미지 태그가 `jenkins-17`로 일치하는 것까지
+  Jenkins→Git→ArgoCD→클러스터 전체 파이프라인을 end-to-end로 확인. 이어서 앱 코드에 실제 변경(footer
+  문구)을 넣어 build #18로 한 번 더 반복 검증.
+- **`ChaosArena-manifests` 레포에 GitHub Webhook 등록 확인** — Payload URL
+  `https://<마스터_공인IP>:30443/api/webhook`, SSL verification은 ArgoCD가 자체 서명 인증서를 쓰기 때문에
+  Disable로 설정. 등록 직후 GitHub가 보낸 `ping` 이벤트에 ArgoCD가 `200`으로 응답한 것을 Recent
+  Deliveries에서 확인 — 이제 ArgoCD 기본 3분 폴링을 기다릴 필요 없이 커밋 직후 몇 초 안에 반영된다.
+
+### 4.23 GitOps 검증 중 Jenkins 에이전트가 영원히 "접속 대기"에 멈춤 — TCP 포트 바인딩 레이스 + K8s Service 고정 포트 불일치 ⭐
+- **증상**: ArgoCD 도입 검증을 위해 더미 커밋을 push했더니, Jenkins 에이전트 파드(`kaniko`/`cosign`/`git`/
+  `jnlp` 4개 컨테이너)는 전부 `Running`인데 Jenkins가 "빌드 태스크를 스케줄링하지 못하고 있다"며 빌드가
+  끝없이 멈췄다(build #14, #15 둘 다).
+- **1차 원인 격리**: `kubectl get pods -n jenkins`로 보니 `jenkins-0` 컨트롤러 자체가 `Unknown` 상태였다가,
+  다시 보니 `Running`인데도 빌드가 안 풀렸다. 컨트롤러 로그(`kubectl logs jenkins-0 -c jenkins`)에서
+  결정적 단서 발견:
+  ```
+  WARNING  Jenkins#launchTcpSlaveAgentListener: Failed to listen to incoming agent
+  connections through port 50000. Change the port number
+  ```
+  이 WARNING의 발생 시각이 바로 몇 시간 전 4.16절 크래시루프를 고치려고 `kubectl delete pod jenkins-0`로
+  강제 재생성했던 시점과 일치했다 — 컨테이너가 막 재시작된 직후, 커널이 이전 프로세스의 소켓 상태를 아직
+  정리 못한 타이밍에 첫 바인딩 시도가 실패한 것으로 보인다(재시작 직후 한 번만 발생하는 레이스 컨디션,
+  4.16절 emptyDir 오염과 같은 "재시작 타이밍 문제" 계열).
+- **연쇄 효과**: 이 바인딩 실패로 `TcpSlaveAgentListener` 객체 자체가 생성되지 않았고, 그 결과 에이전트가
+  접속 위치를 확인하려 두드리는 `/tcpSlaveAgentListener/` HTTP 엔드포인트가 아예 존재하지 않아 모든
+  에이전트가 `404 Not Found`를 받으며 영원히 재시도만 반복했다(`jnlp` 컨테이너 로그로 확인).
+- **1차 시도(Random 포트)의 함정**: Manage Jenkins → Security → Agents에서 TCP 포트를 Fixed 50000 →
+  Random으로 바꿔 저장했더니 404는 사라졌다(설정을 저장하는 행위 자체가 리스너를 재초기화시켰고, 이번엔
+  타이밍 문제가 이미 지나가 있어 바인딩이 성공한 것). 하지만 곧 새 에러가 나왔다:
+  ```
+  Agent discovery successful (Agent port: 50000) → Connecting to jenkins-agent...:50000
+  → Connection refused
+  ```
+  원인: 이 프로젝트의 Kubernetes Service(`jenkins-agent`)와 모든 에이전트 파드의 `JENKINS_TUNNEL` 환경
+  변수는 Helm 배포 시점에 **고정된 포트 50000**으로 이미 배선돼 있는데, 리스너가 실제로는 랜덤 포트에
+  뜨면서 Service가 전달하는 50000번 트래픽을 아무도 안 듣게 된 것 — "포트 번호를 바꾸라"는 에러 메시지를
+  액면 그대로 따른 게 오히려 Kubernetes 고정 배선과 어긋나는 새 문제를 만든 사례.
+- **최종 해결**: 설정을 다시 Fixed 50000으로 되돌리고 저장(→ 리스너 재초기화 재트리거) + `jenkins-0` 파드
+  한 번 더 완전 재생성. 이번엔 (a) 최초의 타이밍 문제도 이미 사라졌고 (b) 값도 Service/에이전트가 기대하는
+  50000과 일치해서 정상 동작. build #17이 `Update Manifests Repo` 스테이지까지 SUCCESS로 완주.
+- **교훈**: Jenkins가 뱉는 에러 메시지("Change the port number")를 액면 그대로 믿고 설정값 자체를 바꾸기
+  전에, 그 값이 Kubernetes Service/환경변수 등 **다른 곳에도 고정 배선돼 있는지**부터 확인했어야 했다.
+  결과적으로 문제를 실제로 푼 건 "포트 값 변경"이 아니라 "설정 저장 → 리스너 재초기화"였다.
 
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
@@ -444,7 +489,9 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **ArgoCD(GitOps) 도입** ⭐ — Jenkins는 빌드+서명(CI)까지만, 배포(CD)는 별도 `ChaosArena-manifests`
   레포를 ArgoCD가 pull 방식으로 감시/반영. Jenkins의 클러스터 배포 권한(`jenkins-deployer`)을
   완전히 제거하고 Git 쓰기 권한만 갖게 함. 배포 랭크 기능(BUILD_NUMBER 등)도 GitOps 원칙에 맞게
-  Git 선언 상태로 전환 (4.22절)
+  Git 선언 상태로 전환 (4.22절). **Jenkins→Git→ArgoCD→클러스터 전체 파이프라인 end-to-end 실측
+  검증 완료**(build #17 SUCCESS, ArgoCD Synced/Healthy, 배포된 이미지 태그 일치 확인). 검증 중 겪은
+  에이전트 TCP 포트 바인딩 레이스 + K8s Service 고정 포트 불일치 트러블슈팅은 4.23절 참고
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

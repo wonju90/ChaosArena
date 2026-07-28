@@ -417,6 +417,22 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   전에, 그 값이 Kubernetes Service/환경변수 등 **다른 곳에도 고정 배선돼 있는지**부터 확인했어야 했다.
   결과적으로 문제를 실제로 푼 건 "포트 값 변경"이 아니라 "설정 저장 → 리스너 재초기화"였다.
 
+### 4.24 GSLB 우선순위 재조정 — 풀 스펙 클러스터(KR2)를 Active로
+- **배경**: 4.15절에서 GSLB를 처음 구성할 때 Pool 이름을 `kr1-active`(우선순위1)/`kr2-standby`(우선순위2)로
+  만들었는데, 이후 KR1은 RAM 쿼터 문제로 최소 스펙 테스트 클러스터(마스터1+워커1)로 남고 Jenkins/Prometheus/
+  ArgoCD 등 풀 스펙 구성은 전부 KR2에 올라갔다. 그 결과 **실제 서비스 트래픽이 계속 최소 스펙 클러스터로
+  가고, 정작 잘 갖춰진 KR2는 대기만 하는** 상태로 방치돼 있었다 — 인프라 지도를 다이어그램으로 그려보다가
+  발견.
+- **변경**: NHN Cloud 콘솔 → DNS Plus → GSLB → `chaosarena` → 연결된 Pool의 우선순위를 `kr2-standby`=1,
+  `kr1-active`=2로 수정(콘솔에서 "Pool 연결 수정"으로 우선순위 숫자만 바꾸는 것 — GSLB 자체가 Terraform
+  미지원이라 4.15절 때처럼 콘솔 작업).
+- **Pool 이름은 그대로 둠**: `kr1-active`/`kr2-standby`라는 이름 자체는 이제 실제 우선순위와 반대로 읽히지만
+  (`kr2-standby`가 실제로는 1순위), NHN Cloud 콘솔에서 Pool 이름 변경 자체가 지원되지 않아 이름은 생성 당시
+  그대로 남겨뒀다. **실제 동작은 이름이 아니라 우선순위 숫자로 결정**되므로 기능상 문제는 없다 — 콘솔을 볼
+  다음 사람을 위해 이 문서에 명시.
+- **검증**: 우선순위 변경 직후(TTL 30초) `dig +short www.chaosarena.cloud` → `114.110.162.53`(KR2 마스터
+  공인IP) 확인. 트래픽이 실제로 KR2로 전환된 것을 확인.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -452,6 +468,9 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   (남은 "2 to add"는 KR1 RAM 쿼터 문제로 아래 항목이 해결되기 전까진 그대로 둘 것) (4.17절)
 - [ ] KR1(판교) RAM 쿼터 확보 → `r2.c4m16`·워커 3대로 정식 재구축 → `deployment-kr1-test.yaml` → `deployment.yaml`(APP_VERSION=kr1) 전환
 - [x] **DNS Plus GSLB failover 구성 + 검증 완료** ⭐ — Zone 생성 → 가비아 네임서버를 NHN으로 위임 → Pool(`kr1-active` 우선순위1/`kr2-standby` 우선순위2) + 헬스체크(`/health`) → GSLB(FAILOVER, TTL 30초) 생성 후 Pool 연결 → `www` CNAME을 GSLB 도메인으로 연결. `scripts/06`으로 KR1 파드를 강제로 내려 실제 failover(약 80초 소요, `kr1-test`→`kr2`)와 복구 후 failback을 둘 다 실측 검증 (4.15절)
+- [x] **GSLB 우선순위 재조정** — 풀 스펙 클러스터인 KR2를 우선순위 1(Active)로, 최소 스펙 테스트
+  클러스터인 KR1을 우선순위 2(Standby)로 변경. `dig +short www.chaosarena.cloud`가 KR2 공인IP를
+  가리키는 것으로 실제 전환 확인 (4.24절)
 - [x] **AlertManager 알림 규칙(파드 다운/CPU/에러율) + Slack 라우팅** — `PrometheusRule`(release 라벨 필요, 4.11 교훈 적용) + Alertmanager Slack 연동. 3단 실패(helm --reuse-values 함정 / Secret 네임스페이스 불일치 / null receiver 삭제로 인한 reconcile 전체 실패)를 로그 기반으로 하나씩 좁혀 해결 (4.12절). `ChaosDemoHighCPU` 알림이 실제로 파드명까지 템플릿 치환되어 Slack 도착 확인
 - [x] **Jenkins CI/CD** ⭐ — KR2 클러스터 내부(Pod)에 Helm으로 설치(hostPath PV로 영속화), `jenkins-deployer` RBAC,
   GitHub Webhook + Pipeline Job(`infra/k8s-setup` 브랜치), Jenkinsfile(Kaniko 빌드+push → cosign 서명 → kubectl

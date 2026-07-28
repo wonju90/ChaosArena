@@ -3,7 +3,9 @@
 // 클러스터 안의 ArgoCD가 그 변경을 감지해서 스스로 반영한다(GitOps, Pull 모델).
 // 배경/설계 근거는 docs/PROJECT_LOG.md 3.5절, docs/CONCEPTS.md 11~13절·Push vs Pull 절 참고.
 // 배포 후에는 앱 자신의 /api/status로 새 버전이 실제로 응답하는지 확인하고, 타임아웃되면 이전
-// 버전으로 되돌리는 커밋을 자동으로 push한다(자동 롤백, CONCEPTS.md 18절).
+// 버전으로 되돌리는 커밋을 자동으로 push한다(자동 롤백, CONCEPTS.md 17절).
+// 성공/롤백 결과는 매번 chaos-deploy-history ConfigMap에 한 줄씩 기록해서 CI/CD 탭의 배포
+// 히스토리 타임라인에 남긴다(CONCEPTS.md 18절).
 
 def REGISTRY = "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena"
 def IMAGE_TAG = "jenkins-${env.BUILD_NUMBER}"
@@ -194,6 +196,27 @@ spec:
                             sleep 10
                         }
 
+                        if (healthy) {
+                            // 배포 히스토리 타임라인용 성공 이벤트를 한 줄 기록한다(JSON Lines, 최신이 맨 위).
+                            // history.jsonl 자체가 아직 없으면(최초 부트스트랩 전) yq가 에러를 내므로,
+                            // deploy-history-configmap.yaml은 반드시 미리 레포에 존재해야 한다
+                            // (docs/SETUP_GUIDE.md 참고, 최초 1회만 사용자가 직접 push).
+                            sh """
+                                cd manifests-repo/argocd-managed
+
+                                TIMESTAMP=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                                NEW_LINE='{"build_number":"${env.BUILD_NUMBER}","git_commit":"${env.GIT_COMMIT_SHORT}","status":"success","timestamp":"'"\$TIMESTAMP"'"}'
+
+                                CURRENT_HISTORY=\$(yq eval '.data["history.jsonl"] // ""' deploy-history-configmap.yaml)
+                                export NEW_HISTORY=\$({ echo "\$NEW_LINE"; echo "\$CURRENT_HISTORY"; } | head -n 10)
+                                yq eval -i '.data["history.jsonl"] = strenv(NEW_HISTORY)' deploy-history-configmap.yaml
+
+                                git add deploy-history-configmap.yaml
+                                git commit -m "history: chaos-demo build #${env.BUILD_NUMBER} 배포 성공 기록" || echo "변경 없음, 커밋 스킵"
+                                git push origin main
+                            """
+                        }
+
                         if (!healthy) {
                             echo "배포 후 약 2분 동안 build_number가 ${env.BUILD_NUMBER}로 바뀌지 않음 — 이전 버전으로 롤백합니다."
                             sh """
@@ -205,7 +228,14 @@ spec:
                                 yq eval -i '(.spec.template.spec.containers[0].env[] | select(.name == "GIT_COMMIT") | .value) = strenv(PREVIOUS_GIT_COMMIT)' deployment.yaml
                                 yq eval -i '(.spec.template.spec.containers[0].env[] | select(.name == "DEPLOY_DURATION_SECONDS") | .value) = strenv(PREVIOUS_DEPLOY_DURATION)' deployment.yaml
 
-                                git add deployment.yaml
+                                # 배포 히스토리 타임라인용 롤백 이벤트도 같은 커밋에 같이 기록한다.
+                                TIMESTAMP=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                                NEW_LINE='{"build_number":"${env.BUILD_NUMBER}","git_commit":"${env.GIT_COMMIT_SHORT}","status":"rollback","recovered_build":"'"\$PREVIOUS_BUILD_NUMBER"'","timestamp":"'"\$TIMESTAMP"'"}'
+                                CURRENT_HISTORY=\$(yq eval '.data["history.jsonl"] // ""' deploy-history-configmap.yaml)
+                                export NEW_HISTORY=\$({ echo "\$NEW_LINE"; echo "\$CURRENT_HISTORY"; } | head -n 10)
+                                yq eval -i '.data["history.jsonl"] = strenv(NEW_HISTORY)' deploy-history-configmap.yaml
+
+                                git add deployment.yaml deploy-history-configmap.yaml
                                 git commit -m "ROLLBACK: chaos-demo build #${env.BUILD_NUMBER} 헬스체크 실패, build #\$PREVIOUS_BUILD_NUMBER로 복구"
                                 git push origin main
                             """

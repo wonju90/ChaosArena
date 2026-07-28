@@ -18,6 +18,7 @@ LOCAL_MODE:
 """
 
 import os
+import json
 import time
 import random
 import threading
@@ -205,6 +206,31 @@ def get_chaos_pods(v1):
     ).items
 
 
+DEPLOY_HISTORY_CONFIGMAP_NAME = "chaos-deploy-history"
+
+
+def get_deploy_history_events(v1):
+    """
+    chaos-deploy-history ConfigMap의 history.jsonl(JSON Lines, 최신이 맨 위)을 읽어
+    이벤트 딕셔너리 목록으로 돌려준다. Jenkinsfile만 이 ConfigMap을 쓰고(Git 커밋 경유),
+    여긴 읽기 전용이다(k8s/rbac.yaml에서 이 ConfigMap 하나만 get 권한을 준 이유).
+    """
+    cm = v1.read_namespaced_config_map(
+        name=DEPLOY_HISTORY_CONFIGMAP_NAME, namespace=NAMESPACE
+    )
+    raw = (cm.data or {}).get("history.jsonl", "")
+    events = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            continue
+    return events
+
+
 def describe_k8s_error(e):
     """
     get_k8s_client()/get_chaos_pods() 호출 중 발생할 수 있는 예외를 사람이 읽을 메시지로 바꾼다.
@@ -244,6 +270,15 @@ def build_mock_pods():
             }
         )
     return pods
+
+
+def build_mock_deploy_history():
+    """LOCAL_MODE용 가짜 배포 히스토리 — 성공 이벤트 몇 개 + 롤백 1건을 섞어 화면 확인용으로 보여준다."""
+    return [
+        {"build_number": "23", "git_commit": "a1b2c3d", "status": "success", "timestamp": "2026-07-28T09:40:00Z"},
+        {"build_number": "22", "git_commit": "def4567", "status": "rollback", "recovered_build": "21", "timestamp": "2026-07-28T09:20:00Z"},
+        {"build_number": "21", "git_commit": "789abcd", "status": "success", "timestamp": "2026-07-28T09:00:00Z"},
+    ]
 
 
 def compute_rank(elapsed_seconds):
@@ -481,6 +516,21 @@ def api_pods():
         for pod in pods
     ]
     return jsonify({"pods": pod_list})
+
+
+@app.route("/api/deploy-history")
+def api_deploy_history():
+    """CI/CD 탭의 배포 히스토리 타임라인용 — 최신순 성공/롤백 이벤트 목록."""
+    if LOCAL_MODE:
+        return jsonify({"events": build_mock_deploy_history()})
+
+    try:
+        v1 = get_k8s_client()
+        events = get_deploy_history_events(v1)
+    except (ApiException, config.ConfigException) as e:
+        return jsonify({"error": f"쿠버네티스 API 호출 실패: {describe_k8s_error(e)}"}), 500
+
+    return jsonify({"events": events})
 
 
 @app.route("/api/mission/peek")

@@ -459,6 +459,33 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   "이 배포는 실패했다"는 신호가 Jenkins 화면에 바로 보이게 함.
 - **변경 파일**: `Jenkinsfile`만 수정(새 인프라 설치 없음) — `Update Manifests Repo` 스테이지에 이전값
   캡처 로직 추가, 새 `Verify Deployment` 스테이지 추가.
+- **실제 검증 결과 + 발견한 한계**: 일부러 `/health`를 깨서 push했더니 build #22가 헬스체크 타임아웃
+  → `"ROLLBACK: ... build #21로 복구"` 커밋이 자동으로 push되고 빌드가 FAILURE로 표시되는 것까지
+  라이브로 확인했다. 다만 그 build #21 자체가 (검증 로직 도입 전 빌드라) 이미 파드가 안 뜨는 상태였던
+  걸 뒤늦게 발견 — **단일 단계 롤백은 "바로 이전 버전"으로만 되돌리기 때문에, 그 이전 버전 자체가 이미
+  나쁜 상태면 복구가 안 되는 한계**가 있다(연속 실패 케이스). `/health`를 정상으로 되돌린 뒤 다시
+  push해서 최종적으로 정상 복구됨을 확인. 이 한계는 발표에서 "가벼운 자체 구현이 커버 못 하는 지점"으로
+  솔직하게 설명할 수 있는 지점으로 남겨둔다(Argo Rollouts 같은 이력 기반 롤백 도구라면 해결되는 문제).
+
+### 4.26 CI/CD 탭 배포 히스토리 타임라인 — 성공/롤백 이력을 화면에 남기기
+- **배경**: 4.25절의 자동 롤백은 실제로 잘 동작했지만, CI/CD 탭 화면에는 그 흔적이 안 남았다 — 롤백이
+  일어나도 화면은 그냥 빌드 번호가 하나 줄어든 정상 배포처럼 보였다. 사용자가 "롤백 과정을 대시보드에
+  어떻게 보여줄지 고민해보자"고 제안해서 진행.
+- **저장 방식**: 새 DB/Redis 없이, `app.py`가 이미 갖고 있던 in-cluster ServiceAccount
+  (`chaos-dashboard-sa`)에 `configmaps` 읽기(`get`) 권한만 추가(`resourceNames`로 이 ConfigMap 하나만
+  제한, 최소 권한 유지). ConfigMap(`chaos-deploy-history`)도 `deployment.yaml`처럼
+  `ChaosArena-manifests/argocd-managed/`에 두고 ArgoCD가 동기화 — 쓰기는 여전히 Jenkins→Git 커밋뿐,
+  앱은 읽기만 한다(GitOps/권한 최소화 원칙 그대로 유지).
+- **데이터 형식**: JSON 배열이 아니라 JSON Lines(줄 하나 = 이벤트 하나, 최신이 맨 위) — Jenkins의 git
+  컨테이너엔 `jq`가 없어서 배열 조작이 번거로운데, JSON Lines는 "새 줄 붙이고 `head -n 10`으로 자르기"만
+  하면 돼서 기존 `yq`/`head`만으로 충분하다.
+- **기록 시점**: `Update Manifests Repo`가 아니라 결과를 확인한 뒤인 `Verify Deployment` 스테이지에서만
+  기록 — 미리 "성공"으로 적어두면 그 뒤 롤백될 때 이미 틀린 기록이 남는 문제(낙관적 기록의 함정)를
+  피하기 위함.
+- **변경 파일**: `k8s/rbac.yaml`(configmaps get 권한 추가), `k8s/deploy-history-configmap.yaml`(신규),
+  `Jenkinsfile`(Verify Deployment 성공/실패 분기에 이력 기록 로직 추가), `app.py`(`/api/deploy-history`
+  엔드포인트), `templates/cicd.html`(타임라인 UI). `LOCAL_MODE=true`로 로컬 실행해 엔드포인트/화면 정상
+  동작은 확인 완료, 실제 클러스터에 RBAC/ConfigMap을 반영하고 라이브 이벤트가 쌓이는 것 검증은 대기 중.
 
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
@@ -538,9 +565,14 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   Git 선언 상태로 전환 (4.22절). **Jenkins→Git→ArgoCD→클러스터 전체 파이프라인 end-to-end 실측
   검증 완료**(build #17 SUCCESS, ArgoCD Synced/Healthy, 배포된 이미지 태그 일치 확인). 검증 중 겪은
   에이전트 TCP 포트 바인딩 레이스 + K8s Service 고정 포트 불일치 트러블슈팅은 4.23절 참고
-- [ ] **Jenkins 자동 롤백** — 배포 후 `/api/status`의 `build_number`로 새 버전 반영을 확인하고, 약
+- [x] **Jenkins 자동 롤백** ⭐ — 배포 후 `/api/status`의 `build_number`로 새 버전 반영을 확인하고, 약
   2분 내에 안 바뀌면 이전 버전으로 되돌리는 커밋을 자동 push. 새 크레덴셜 없이 클러스터 내부 Service
-  DNS만으로 확인(4.25절). `Jenkinsfile` 코드 반영 완료, 실제 헬스체크 실패 상황을 만들어 롤백이 도는지
+  DNS만으로 확인(4.25절). 실제로 헬스체크를 깨서 롤백 커밋이 push되고 빌드가 FAILURE로 표시되는 것까지
+  라이브 검증 완료 — 다만 "그 이전 버전 자체가 이미 나쁜 상태면 복구 안 됨"이라는 단일 단계 롤백의
+  한계도 함께 발견(4.25절 트러블슈팅)
+- [ ] **CI/CD 탭 배포 히스토리 타임라인** — 배포 성공/롤백 이력을 ConfigMap에 기록해 화면에 최신순으로
+  보여줌(4.26절). 코드(`rbac.yaml`/`deploy-history-configmap.yaml`/`Jenkinsfile`/`app.py`/`cicd.html`)
+  반영 + 로컬(`LOCAL_MODE`) 화면 검증 완료, 실제 클러스터에 RBAC/ConfigMap 반영 및 라이브 이벤트 기록
   검증은 대기 중
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 

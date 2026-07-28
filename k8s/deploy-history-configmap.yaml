@@ -1,0 +1,22 @@
+# -----------------------------------------------------------------------------
+# CI/CD 탭의 "배포 히스토리" 타임라인용 데이터 저장소.
+#
+# 쓰기: Jenkinsfile의 Verify Deployment 스테이지가 배포 성공/롤백 시마다 이 파일을
+#       ChaosArena-manifests 레포에서 직접 고쳐 commit+push한다 (앱은 절대 안 씀).
+# 반영: ArgoCD가 deployment.yaml과 똑같이 이 파일도 감지해서 클러스터에 동기화한다.
+# 읽기: app.py가 chaos-dashboard-sa ServiceAccount(k8s/rbac.yaml, configmaps get 권한)로
+#       읽어서 /api/deploy-history로 내려준다.
+#
+# history.jsonl은 JSON 배열이 아니라 JSON Lines(줄 하나 = 이벤트 하나, 최신이 맨 위)다.
+# 배열로 저장하면 매번 파싱→앞에 추가→재직렬화가 필요한데, Jenkins의 git 컨테이너엔 jq가
+# 없어서 배열 조작이 번거롭다. JSON Lines는 "새 줄을 맨 앞에 붙이고 head -n 10으로 자르기"만
+# 하면 되므로 yq/head/echo만으로 충분하다 (docs/CONCEPTS.md 참고).
+# -----------------------------------------------------------------------------
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chaos-deploy-history
+  namespace: default
+data:
+  history.jsonl: ""

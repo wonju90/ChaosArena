@@ -617,6 +617,71 @@ Jenkins 빌드는 `Update Manifests Repo`까지 SUCCESS로 진행되지만(이�
 빌드가 최종적으로 FAILURE(빨간 배지)로 끝나는지 확인한다. 확인 후엔 `/health`를 원래대로 되돌리는
 커밋을 잊지 말고 push할 것.
 
+### 9.8 CI/CD 탭 배포 히스토리 — 최초 1회 ConfigMap 부트스트랩
+
+9.7절의 자동 롤백은 실제로 잘 동작하지만, 롤백이 일어나도 CI/CD 탭 화면에는 그 흔적이 안 남는다 —
+그냥 빌드 번호가 하나 줄어든 정상 배포처럼 보인다. 그래서 배포 성공/롤백 이력을 최신순으로 보여주는
+**타임라인**을 CI/CD 탭에 추가했다(설계 이유는 `docs/CONCEPTS.md` 18절 참고). 코드
+(`k8s/rbac.yaml`, `k8s/deploy-history-configmap.yaml`, `Jenkinsfile`, `app.py`, `templates/cicd.html`)는
+이미 이 레포에 반영돼 있지만, **딱 하나 최초 1회 수동 단계가 필요하다.**
+
+**왜 수동 단계가 필요한가**: Jenkins는 이력을 기록할 때 `deploy-history-configmap.yaml` 파일의 *내용만*
+`yq`로 고친다 — 파일 자체가 `ChaosArena-manifests` 레포에 없으면 `yq`가 그냥 에러를 내고 멈춘다(9.2절의
+`deployment.yaml`처럼, "레포에 이미 있는 파일을 고치는" 전제로 설계했기 때문). 그래서 이 파일을
+Jenkins가 처음 건드리기 전에, 사람이 딱 한 번 레포에 심어둬야 한다. 마침 이번에 `k8s/rbac.yaml`에도
+"이 앱이 ConfigMap을 읽을 수 있다"는 권한 한 줄이 추가됐으니, 두 파일을 같이 반영한다.
+
+**1) 두 파일을 매니페스트 레포로 복사 + push** — 9.2절에서 로컬에 만들어뒀던 클론 폴더(예:
+`/tmp/ChaosArena-manifests`)가 있으면 그 위치로 `cd`하면 되고, 없으면(며칠 지나 `/tmp`가 정리됐거나
+다른 컴퓨터라면) 아래처럼 GitHub에서 새로 clone하면 된다 — 9.3절에서 이미 push해뒀으니 레포 자체는
+GitHub에 그대로 남아있다:
+```bash
+# 기존 클론이 남아있으면: cd /tmp/ChaosArena-manifests 로 이동해서 아래 cp부터 이어서 진행
+# 없으면(디렉토리가 안 보이면) 아래처럼 새로 clone
+git clone https://github.com/wonju90/ChaosArena-manifests.git /tmp/ChaosArena-manifests
+cd /tmp/ChaosArena-manifests
+
+# 이 레포(ChaosArena) 쪽의 최신 파일을 그대로 복사해온다
+cp /Users/wonju/workspaces/ChaosArena/k8s/rbac.yaml argocd-managed/rbac.yaml
+cp /Users/wonju/workspaces/ChaosArena/k8s/deploy-history-configmap.yaml argocd-managed/deploy-history-configmap.yaml
+
+git add argocd-managed/rbac.yaml argocd-managed/deploy-history-configmap.yaml
+git commit -m "Add deploy-history ConfigMap + RBAC read permission"
+git push
+```
+9.5절에서 켜둔 `syncPolicy.automated`(selfHeal) 덕분에, push하고 나면 ArgoCD가 알아서(웹훅을 등록해
+뒀다면 거의 즉시, 아니면 최대 3분 내) 이 두 리소스를 클러스터에 반영한다 — 여기서 따로 `kubectl apply`할
+필요는 없다.
+
+**2) ArgoCD가 실제로 반영했는지 확인**
+```bash
+kubectl get configmap chaos-deploy-history -n default -o yaml
+# data.history.jsonl 키가 보이면 ConfigMap 자체는 반영된 것 (아직 내용은 비어있는 게 정상)
+
+kubectl get role pod-manager -n default -o yaml
+# rules 목록에 resources: [configmaps] 항목이 추가돼 있는지 확인
+```
+
+**3) 권한이 실제로 통하는지 확인** — RBAC는 반영됐다고 항상 바로 통하는 게 아니라서, 앱이 쓰는
+ServiceAccount 입장에서 직접 확인하는 게 제일 확실하다:
+```bash
+kubectl auth can-i get configmaps/chaos-deploy-history \
+  --as=system:serviceaccount:default:chaos-dashboard-sa -n default
+# yes 가 나와야 정상. no가 나오면 위 1)~2)가 아직 안 끝난 것이니 잠시 뒤 재확인
+```
+
+**4) 정상 배포로 성공(✅) 이벤트 확인**
+```bash
+git commit --allow-empty -m "test: 배포 히스토리 타임라인 확인용"
+git push
+```
+Jenkins 빌드가 SUCCESS로 끝나면(`Verify Deployment`까지 정상 통과), `/cicd` 탭의 "배포 히스토리"
+패널에 `✅ 빌드 #N 성공` 항목이 최신순 맨 위에 새로 뜨는지 확인한다.
+
+**5) (선택) 롤백(🔁) 이벤트까지 확인** — 9.7절의 롤백 테스트를 다시 한 번 해보면, 이번엔 화면에
+`🔁 빌드 #N 롤백` + `⚠️ 헬스체크 실패 → #M로 자동 복구` 문구가 같이 남는 것까지 확인할 수 있다. 확인
+후엔 9.7절과 마찬가지로 `/health`를 원래대로 되돌리는 커밋을 잊지 말고 push할 것.
+
 ---
 
 ## 다음에 추가될 내용 (아직 미착수)

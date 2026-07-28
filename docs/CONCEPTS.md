@@ -804,3 +804,4 @@ ingress-nginx 파드를 일부러 마스터 노드에 스케줄링해야 한다.
 
 - 실제 의사결정과 트러블슈팅 상세 기록: [`PROJECT_LOG.md`](./PROJECT_LOG.md)
   - 각 절에서 언급한 4.x 번호가 그 문서의 트러블슈팅 항목이다.
+- 처음부터 직접 따라 하는 실행 가이드(명령어+순서): [`SETUP_GUIDE.md`](./SETUP_GUIDE.md)

@@ -424,7 +424,7 @@ ChaosArena/
 ├── Dockerfile
 ├── requirements.txt
 ├── k8s/                    # rbac, deployment, hpa, ingress(-nginx), service(lb/nodeport), metallb, secret 예시
-├── scripts/                # 01~05 클러스터 구축 + 06 GSLB failover 테스트
+├── scripts/                # 01~05 클러스터 구축 + 06 GSLB failover 테스트 + 07 metrics-server
 ├── terraform/
 │   ├── providers.tf        # kr1/kr2 provider (Keystone v3)
 │   ├── main.tf             # 모듈 2회 호출
@@ -432,7 +432,8 @@ ChaosArena/
 │   └── terraform.tfvars.example
 └── docs/
     ├── PROJECT_LOG.md      # (이 문서) 의사결정 + 트러블슈팅 기록
-    └── CONCEPTS.md         # 초보자 관점 배경지식 노트 (Jenkins, PV/hostPath, RBAC 등)
+    ├── CONCEPTS.md         # 초보자 관점 배경지식 노트 (Jenkins, PV/hostPath, RBAC 등)
+    └── SETUP_GUIDE.md      # 처음부터 직접 따라 하는 실행 가이드 (명령어 + 순서 + 이유)
 ```
 
 ---

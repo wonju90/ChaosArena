@@ -275,9 +275,10 @@ def build_mock_pods():
 def build_mock_deploy_history():
     """LOCAL_MODE용 가짜 배포 히스토리 — 성공 이벤트 몇 개 + 롤백 1건을 섞어 화면 확인용으로 보여준다."""
     return [
-        {"build_number": "23", "git_commit": "a1b2c3d", "status": "success", "timestamp": "2026-07-28T09:40:00Z"},
-        {"build_number": "22", "git_commit": "def4567", "status": "rollback", "recovered_build": "21", "timestamp": "2026-07-28T09:20:00Z"},
-        {"build_number": "21", "git_commit": "789abcd", "status": "success", "timestamp": "2026-07-28T09:00:00Z"},
+        {"build_number": "26", "git_commit": "66c61b6", "status": "success", "timestamp": "2026-07-28T09:40:00Z"},
+        {"build_number": "25", "git_commit": "1b5bb8d", "status": "success", "timestamp": "2026-07-28T09:20:00Z"},
+        {"build_number": "24", "git_commit": "def4567", "status": "rollback", "recovered_build": "23", "timestamp": "2026-07-28T09:00:00Z"},
+        {"build_number": "23", "git_commit": "789abcd", "status": "success", "timestamp": "2026-07-28T08:40:00Z"},
     ]
 
 
@@ -407,7 +408,7 @@ def cicd_page():
 @app.route("/health")
 def health():
     """K8s Liveness/Readiness Probe가 호출하는 헬스체크 엔드포인트."""
-    return jsonify({"status": "error"}), 500
+    return jsonify({"status": "ok"}), 200
 
 
 @app.route("/metrics")

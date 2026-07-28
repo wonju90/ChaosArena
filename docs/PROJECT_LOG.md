@@ -342,6 +342,36 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   회귀 없이 정상. **`curl http://www.chaosarena.cloud/api/status`(포트 없이) → 200** — 실제 도메인으로
   포트 없는 접속 확인 완료.
 
+### 4.22 ArgoCD(GitOps) 도입 — Jenkins의 배포 권한을 없애고 Pull 모델로 전환
+- **배경**: Jenkins가 빌드→서명→배포(`kubectl set image` 직접 실행)까지 전부 담당하는 Push 모델이었다.
+  Jenkins처럼 외부 웹훅을 받는 시스템이 클러스터 배포 권한까지 들고 있으면, Jenkins가 뚫렸을 때 그
+  권한이 그대로 악용될 수 있다. Jenkins는 CI(빌드+서명)만 담당하고, 배포는 클러스터 안의 ArgoCD가
+  Git을 스스로 지켜보다 반영하는 구조(Pull, GitOps)로 바꾸기로 이전부터 방향을 정해뒀었다.
+- **매니페스트 레포 분리**: `ChaosArena-manifests`라는 별도 GitHub 레포를 만들어 `k8s/`의 내용을
+  옮겼다. 순수 K8s 매니페스트(`argocd-managed/`)와 Helm values 파일(`helm-values/`)을 폴더로
+  분리했는데, 후자는 `apiVersion`/`kind`가 없는 값 파일이라 ArgoCD의 기본 디렉터리 동기화 방식으로
+  처리가 안 되기 때문이다 — 이번 스코프는 "Jenkins가 매 빌드 바꾸는 대상"(앱 Deployment)에만 GitOps를
+  적용하는 최소 범위로 잡았다. Helm 차트까지 관리하려면 차트별 `Application`(source.helm)을 추가로
+  만들어야 하는데, 이건 다음 확장 과제로 남긴다.
+- **GitOps 원칙과 어긋났던 부분 하나 발견**: `BUILD_NUMBER`/`GIT_COMMIT`/`DEPLOY_DURATION_SECONDS`는
+  원래 Jenkins가 배포 직후 `kubectl set env`로 즉석에서 클러스터에만 심어주던 값이라(11.6절), Git에는
+  없는 상태였다. 이대로 두면 ArgoCD의 self-heal이 "Git과 다르다"며 오히려 이 값들을 지워버릴 것이다.
+  그래서 `k8s/deployment.yaml`에 이 세 값을 아예 선언해두고, Jenkins가 매니페스트 레포 사본에 값을
+  채워 커밋하는 방식으로 바꿔서 "클러스터의 실제 상태 = Git의 내용"이 유지되게 했다.
+- **Jenkinsfile 변경**: Deploy 스테이지(`kubectl set image/env/rollout status`) → "Update Manifests
+  Repo" 스테이지(매니페스트 레포 clone → `yq`로 이미지 태그/env 값 구조적으로 편집 → commit/push)로
+  교체. `sed`가 아니라 `yq`를 쓴 이유: env 리스트를 줄 순서 기반으로 바꾸면 순서가 조금만 달라져도
+  깨지는데, `yq`는 "이름이 X인 항목의 value"처럼 구조로 찾아 바꿔서 몇 번을 반복 실행해도 안전하다.
+  파드 템플릿에서 `kubectl` 컨테이너와 `jenkins-deployer` ServiceAccount도 제거했다 — 이제 클러스터
+  권한이 전혀 필요 없다(`k8s/jenkins-deploy-rbac.yaml`은 참고용으로 남겨두되 더 이상 안 씀 표시).
+- **배포 랭크(CI/CD 탭) 의미 변화**: `DEPLOY_DURATION_SECONDS`는 이제 "Jenkins가 빌드+서명+매니페스트
+  커밋까지 끝낸 시간"이지, 실제 클러스터 반영까지의 시간이 아니다. ArgoCD 기본 폴링 주기(3분)를
+  기다리면 체감 지연이 커서, 매니페스트 레포에도 Jenkins 웹훅과 같은 방식으로 GitHub Webhook을
+  ArgoCD에 걸어 즉시 반영되게 했다.
+- **작업 방식 변화**: 사용자가 "인프라를 직접 실행해보며 배우고 싶다"고 요청해서, ArgoCD 설치·새
+  GitHub 레포 생성·Jenkins credential 등록 같은 실행형 작업은 이번부터 `docs/SETUP_GUIDE.md`에
+  가이드로만 제시하고 직접 실행은 안 함(코드/설정 파일 편집만 담당).
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -411,6 +441,10 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   실제 입구를 Ingress로 전환, host를 catch-all로 바꿔 헬스체크 회귀도 방지(4.20절). 3단계(포트 번호
   제거): hostPort+마스터 노드 스케줄링으로 진짜 80번 포트를 열어 **`www.chaosarena.cloud`가 포트 번호
   없이 접속되는 것까지 KR1/KR2 양쪽 확인 완료**(4.21절). TLS는 다음 단계로 보류.
+- [x] **ArgoCD(GitOps) 도입** ⭐ — Jenkins는 빌드+서명(CI)까지만, 배포(CD)는 별도 `ChaosArena-manifests`
+  레포를 ArgoCD가 pull 방식으로 감시/반영. Jenkins의 클러스터 배포 권한(`jenkins-deployer`)을
+  완전히 제거하고 Git 쓰기 권한만 갖게 함. 배포 랭크 기능(BUILD_NUMBER 등)도 GitOps 원칙에 맞게
+  Git 선언 상태로 전환 (4.22절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---
@@ -423,7 +457,9 @@ ChaosArena/
 ├── templates/              # base/game/monitor/records/cicd (Jinja2 상속)
 ├── Dockerfile
 ├── requirements.txt
-├── k8s/                    # rbac, deployment, hpa, ingress(-nginx), service(lb/nodeport), metallb, secret 예시
+├── k8s/                    # rbac, deployment, hpa, ingress(-nginx), service(lb/nodeport), metallb,
+│                           # argocd-application, secret 예시 — "처음 배우는 템플릿"이며, 실제 배포
+│                           # 상태의 source of truth는 별도 ChaosArena-manifests 레포(4.22절)
 ├── scripts/                # 01~05 클러스터 구축 + 06 GSLB failover 테스트 + 07 metrics-server
 ├── terraform/
 │   ├── providers.tf        # kr1/kr2 provider (Keystone v3)

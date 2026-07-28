@@ -479,12 +479,135 @@ curl http://www.<본인도메인>/api/status          # 실제 도메인도 포�
 
 ---
 
+## Part 9. ArgoCD(GitOps) — Jenkins는 CI만, 배포는 Pull 방식으로
+
+### 9.1 왜 바꾸는가 — Push(지금) vs Pull(ArgoCD)
+
+지금까지 Jenkins는 빌드→서명→**배포**(`kubectl set image`를 직접 실행)까지 전부 했다(Push 모델).
+이 말은 곧 Jenkins가 클러스터를 배포할 수 있는 진짜 권한(`jenkins-deployer`)을 들고 있었다는 뜻이다.
+Jenkins는 외부 GitHub 웹훅을 받는 시스템이라 공격 표면이 넓은 편인데, 여기가 뚫리면 그 배포 권한이
+그대로 악용될 수 있다.
+
+**Pull 모델(ArgoCD)**은 Jenkins가 "이미지가 준비됐다"는 사실을 **Git 커밋으로만 남기고 끝**낸다.
+클러스터 안에 떠있는 ArgoCD가 그 Git 저장소를 스스로 지켜보다가 변경을 발견하면 **자기가** 클러스터
+상태를 그에 맞춘다. 핵심 이점 두 가지:
+1. **배포 권한이 클러스터 밖(Jenkins)으로 안 나간다** — Jenkins는 이제 Git에 쓰기 권한만 있으면 된다.
+2. **Git이 항상 진실이다(GitOps)** — 누가 `kubectl`로 몰래 바꿔놔도 ArgoCD가 Git과 다르다는 걸 감지해
+   자동으로 되돌린다(self-heal).
+
+### 9.2 매니페스트 레포 분리 준비
+
+이 레포(`ChaosArena`)의 `k8s/`는 계속 "처음 배우는 템플릿"으로 남겨두고(Part 1~8을 나중에 또
+따라 하려면 필요), **실제 GitOps가 지켜볼 레포는 새로 분리**한다. `k8s/` 안엔 순수 K8s 매니페스트와
+Helm values 파일(`apiVersion`/`kind`가 없는 값 파일)이 섞여 있는데, ArgoCD는 후자를 처리 못 하므로
+폴더를 나눠서 옮긴다:
+
+```bash
+mkdir -p /tmp/ChaosArena-manifests/argocd-managed /tmp/ChaosArena-manifests/helm-values
+cd /Users/<본인>/workspaces/ChaosArena   # 이 레포 경로
+
+cp k8s/deployment.yaml k8s/rbac.yaml k8s/hpa.yaml k8s/chaos-demo-ingress.yaml \
+   k8s/service-nodeport.yaml k8s/servicemonitor.yaml k8s/prometheusrule.yaml \
+   /tmp/ChaosArena-manifests/argocd-managed/
+
+cp k8s/jenkins-values.yaml k8s/ingress-nginx-values.yaml \
+   k8s/alertmanager-slack-values.yaml k8s/metallb-ipaddresspool.yaml \
+   /tmp/ChaosArena-manifests/helm-values/
+```
+**왜 Helm values는 안 옮기고 따로 두는가**: Jenkins/ingress-nginx/모니터링 스택은 원래도 Helm으로
+설치했지 `kubectl apply`가 아니었다. 이번 ArgoCD 도입은 "Jenkins가 매 빌드 바꾸는 것"(=앱
+Deployment)에만 GitOps를 적용하는 최소 범위다 — Helm 차트까지 ArgoCD로 관리하려면 차트별로 별도
+`Application`(source.helm)을 만들어야 하는데, 이건 자연스러운 다음 확장 과제로 남겨둔다.
+
+### 9.3 새 GitHub 레포 생성 + 푸시
+
+```bash
+cd /tmp/ChaosArena-manifests
+git init -b main
+git add .
+git commit -m "Initial GitOps manifests"
+
+gh repo create ChaosArena-manifests --public --source=. --remote=origin --push
+# gh CLI가 없거나 웹에서 만들고 싶으면: github.com에서 새 레포 생성 후
+#   git remote add origin https://github.com/<본인계정>/ChaosArena-manifests.git
+#   git push -u origin main
+```
+
+### 9.4 ArgoCD 설치 (KR2)
+
+```bash
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl -n argocd rollout status deploy/argocd-server
+```
+
+노출(기존 NodePort 패턴처럼):
+```bash
+kubectl -n argocd patch svc argocd-server -p '{"spec": {"type": "NodePort", "ports": [{"port": 443, "targetPort": 8080, "nodePort": 30443, "name": "https"}]}}'
+```
+
+초기 admin 비밀번호 확인:
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+```
+`https://<마스터_공인IP>:30443`으로 접속(계정 `admin`) — 자체 서명 인증서라 브라우저 경고가 뜨는데, 지금
+단계에선 정상이다(TLS는 아직 안 붙임).
+
+### 9.5 Application 등록 — 이 레포에 이미 있는 파일 적용
+
+```bash
+kubectl apply -f k8s/argocd-application.yaml
+```
+적용 전에 `k8s/argocd-application.yaml`의 `spec.source.repoURL`을 본인이 만든
+`ChaosArena-manifests` 레포 주소로 바꿔야 한다. `syncPolicy.automated`(prune+selfHeal)로 돼있어서
+사람이 "Sync" 버튼을 누를 필요 없이 Git 변경이 곧바로 반영된다.
+
+**폴링 지연 없애기(웹훅)**: ArgoCD는 기본적으로 3분마다 Git을 폴링한다. Jenkins 웹훅 때처럼 즉시
+반영되게 하려면, `ChaosArena-manifests` 레포에도 Webhook을 등록한다: GitHub 저장소 Settings →
+Webhooks → Payload URL `https://<마스터_공인IP>:30443/api/webhook`, Content type
+`application/json`.
+
+### 9.6 Jenkins가 매니페스트 레포에 쓸 수 있게 — GitHub PAT 등록
+
+1. GitHub → Settings → Developer settings → Personal access tokens → Fine-grained token 생성,
+   `ChaosArena-manifests` 레포에 대해 **Contents: Read and write** 권한만 부여(최소 권한)
+2. Jenkins 웹 UI → Manage Jenkins → Credentials → 새 Credential 추가
+   - 종류: Secret text, 값: 위에서 만든 토큰
+3. 이 토큰을 클러스터 Secret으로도 등록(Jenkinsfile의 `git` 컨테이너가 읽는 값):
+   ```bash
+   kubectl create secret generic manifests-repo-token -n jenkins \
+     --from-literal=token='<위에서 만든 PAT>'
+   ```
+4. `Jenkinsfile` 상단의 `MANIFESTS_REPO` 변수를 본인 레포 주소로 수정 (레포에 이미 있는 파일, 코드
+   편집만 하면 됨)
+
+### ✅ 확인
+
+더미 커밋을 push하고:
+```bash
+# 1) Jenkins 빌드가 SUCCESS로 끝나는지, ChaosArena-manifests 레포에 새 커밋이 생겼는지 확인
+# 2) ArgoCD Application 상태 확인
+kubectl -n argocd get application chaos-demo
+# STATUS: Synced, HEALTH: Healthy 면 성공
+
+# 3) 실제 클러스터에 반영됐는지
+kubectl get deployment chaos-demo -o jsonpath='{.spec.template.spec.containers[0].image}'
+# 방금 ChaosArena-manifests에 커밋된 이미지 태그와 일치해야 함
+```
+앱의 `/cicd` 탭에서 빌드 번호/배포 랭크도 그대로 올라오는지 확인 — 이제 이 값은 "Jenkins가
+빌드+서명+매니페스트 커밋까지 끝낸 시간"을 의미한다(실제 클러스터 반영은 ArgoCD가 그 뒤에 한다).
+
+기존 접속 경로(`:30080`, 포트 없는 80, `www.<본인도메인>`)도 전부 회귀 없이 그대로 동작하는지 확인.
+
+---
+
 ## 다음에 추가될 내용 (아직 미착수)
 
-- **TLS(HTTPS)**: cert-manager + Let's Encrypt. 443 포트를 보안그룹에 추가로 열어야 함(80은 이미 열려있음)
-- **ArgoCD(GitOps)**: Jenkins는 빌드+서명까지만 담당하고, 배포는 별도 매니페스트 레포를 ArgoCD가 pull하는
-  구조로 전환(B안, 방향만 확정)
-- **KR1 정식 재구축**: RAM 쿼터 확보 후 `r2.c4m16` 스펙, 워커 3대로
+- **TLS(HTTPS)**: cert-manager + Let's Encrypt. 443 포트를 보안그룹에 추가로 열어야 함(80은 이미 열려있음).
+  ArgoCD 자체 UI(9.4절)도 지금은 자체 서명 인증서인데, 이때 같이 정리 가능
+- **Helm 차트도 ArgoCD로 관리**: Jenkins/ingress-nginx/모니터링 스택까지 GitOps 대상으로 확장(차트별
+  `Application` 추가)
+- **KR1 정식 재구축**: RAM 쿼터 확보 후 `r2.c4m16` 스펙, 워커 3대로, 그리고 이 ArgoCD 구성도 반복
 
 작업을 진행할 때마다 이 문서에 새 Part를 이어서 추가한다. 개념 설명이 더 필요하면 `docs/CONCEPTS.md`,
 그 과정에서 겪은 장애물의 자세한 진단 과정은 `docs/PROJECT_LOG.md`를 참고할 것.

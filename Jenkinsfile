@@ -1,8 +1,12 @@
-// Jenkins CI/CD 파이프라인 — push 시 Kaniko 빌드+push → cosign 서명 → kubectl 배포까지 완전 자동화.
-// 배경/설계 근거는 docs/PROJECT_LOG.md 3.5절, docs/CONCEPTS.md 11~13절 참고.
+// Jenkins CI/CD 파이프라인 — push 시 Kaniko 빌드+push → cosign 서명까지만 담당(CI).
+// 배포(CD)는 여기서 kubectl로 직접 하지 않고, ChaosArena-manifests 레포에 이미지 태그를 커밋+푸시하면
+// 클러스터 안의 ArgoCD가 그 변경을 감지해서 스스로 반영한다(GitOps, Pull 모델).
+// 배경/설계 근거는 docs/PROJECT_LOG.md 3.5절, docs/CONCEPTS.md 11~13절·Push vs Pull 절 참고.
 
 def REGISTRY = "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena"
 def IMAGE_TAG = "jenkins-${env.BUILD_NUMBER}"
+// 본인 GitHub 계정으로 만든 ChaosArena-manifests 레포 주소로 바꿀 것 (docs/SETUP_GUIDE.md ArgoCD Part 참고).
+def MANIFESTS_REPO = "github.com/<본인계정>/ChaosArena-manifests.git"
 
 pipeline {
     agent {
@@ -11,7 +15,9 @@ pipeline {
 apiVersion: v1
 kind: Pod
 spec:
-  serviceAccountName: jenkins-deployer
+  # ArgoCD 도입 이전엔 여기서 kubectl로 직접 배포해야 해서 jenkins-deployer ServiceAccount(클러스터
+  # 배포 권한)가 필요했다. 이제 Jenkins는 Git에 커밋만 하고 클러스터는 안 건드리므로, 이 파드는
+  # 클러스터 권한이 필요 없다 — 이게 Push→Pull 전환의 핵심 이점(권한이 Jenkins 밖으로 안 나감).
   containers:
     - name: kaniko
       image: gcr.io/kaniko-project/executor:v1.23.2-debug
@@ -40,16 +46,19 @@ spec:
           mountPath: /root/.docker
         - name: cosign-key
           mountPath: /mnt/cosign-key
-    - name: kubectl
-      # bitnami/kubectl:1.33처럼 짧은 태그는 Bitnami의 카탈로그 개편(2025)으로 더 이상 존재하지 않음.
-      # 예전 무료 이미지는 bitnamilegacy 네임스페이스의 전체 버전 태그로 옮겨짐.
-      image: bitnamilegacy/kubectl:1.33.4-debian-12-r0
+    - name: git
+      # ChaosArena-manifests 레포를 clone/commit/push하는 전용 컨테이너. alpine/git은 기본이 root라
+      # cosign/kubectl 스테이지 때 겪었던 "process apparently never started"(non-root 워크스페이스 쓰기
+      # 실패) 문제가 애초에 없다.
+      image: alpine/git:2.45.2
       command: ["cat"]
       tty: true
-      # Bitnami 이미지는 기본적으로 non-root로 뜨는데, 그 상태에서는 Jenkins가 워크스페이스에
-      # 실행 스크립트를 쓰지 못해 "process apparently never started"가 난다(cosign 스테이지와 동일 원인).
-      securityContext:
-        runAsUser: 0
+      env:
+        - name: GIT_MANIFESTS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: manifests-repo-token
+              key: token
   volumes:
     - name: ncr-auth
       secret:
@@ -107,23 +116,41 @@ spec:
             }
         }
 
-        stage('Deploy') {
+        stage('Update Manifests Repo') {
+            // 예전엔 여기서 kubectl로 클러스터를 직접 바꿨다(Push 모델). 지금은 GitOps 매니페스트
+            // 레포에 커밋+푸시만 하고, 클러스터에 실제로 반영하는 건 ArgoCD의 몫이다(Pull 모델) —
+            // 그래서 이 스테이지 이름도 "Deploy"가 아니라 "Update Manifests Repo"다.
             steps {
                 script {
                     // checkout scm이 채워주는 전체 커밋 해시를 화면 표시용으로 짧게 자른다.
                     env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : "unknown"
                     // Checkout 스테이지 시작 시점부터 지금까지 걸린 시간(초) = 이번 빌드의 "배포 랭크" 소재.
+                    // 주의: 이 값은 이제 "Jenkins가 빌드+서명+매니페스트 커밋까지 끝낸 시간"이지,
+                    // 실제로 클러스터에 반영되기까지의 시간이 아니다(그건 ArgoCD 동기화 몫).
                     env.DEPLOY_DURATION_SECONDS = ((System.currentTimeMillis() - env.PIPELINE_START_MS.toLong()) / 1000).toInteger().toString()
                 }
-                container('kubectl') {
+                container('git') {
                     sh """
-                        KUBE_TOKEN=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-                        KUBE_CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-                        KUBECTL="kubectl --server=https://kubernetes.default.svc --certificate-authority=\$KUBE_CA --token=\$KUBE_TOKEN -n default"
+                        # yq(구조화된 YAML 편집기)를 쓴다 — sed는 "몇 번째 줄 다음 줄을 바꿔라" 식이라
+                        # env 목록 순서가 조금만 바뀌어도 깨지기 쉽다. yq는 "이름이 BUILD_NUMBER인
+                        # 항목의 value"처럼 구조로 찾아서 바꾸므로 몇 번을 반복 실행해도 안전하다.
+                        wget -q -O /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+                        chmod +x /usr/local/bin/yq
 
-                        \$KUBECTL set image deployment/chaos-demo chaos-demo=${REGISTRY}:${IMAGE_TAG}
-                        \$KUBECTL set env deployment/chaos-demo BUILD_NUMBER=${env.BUILD_NUMBER} GIT_COMMIT=${env.GIT_COMMIT_SHORT} DEPLOY_DURATION_SECONDS=${env.DEPLOY_DURATION_SECONDS}
-                        \$KUBECTL rollout status deployment/chaos-demo --timeout=180s
+                        rm -rf manifests-repo
+                        git clone https://\${GIT_MANIFESTS_TOKEN}@${MANIFESTS_REPO} manifests-repo
+                        cd manifests-repo/argocd-managed
+
+                        yq eval -i '(.spec.template.spec.containers[0].image) = "${REGISTRY}:${IMAGE_TAG}"' deployment.yaml
+                        yq eval -i '(.spec.template.spec.containers[0].env[] | select(.name == "BUILD_NUMBER") | .value) = "${env.BUILD_NUMBER}"' deployment.yaml
+                        yq eval -i '(.spec.template.spec.containers[0].env[] | select(.name == "GIT_COMMIT") | .value) = "${env.GIT_COMMIT_SHORT}"' deployment.yaml
+                        yq eval -i '(.spec.template.spec.containers[0].env[] | select(.name == "DEPLOY_DURATION_SECONDS") | .value) = "${env.DEPLOY_DURATION_SECONDS}"' deployment.yaml
+
+                        git config user.email "jenkins@chaosarena.local"
+                        git config user.name "jenkins-ci"
+                        git add deployment.yaml
+                        git commit -m "chaos-demo: bump to ${IMAGE_TAG} (build #${env.BUILD_NUMBER}, ${env.GIT_COMMIT_SHORT})" || echo "변경 없음, 커밋 스킵"
+                        git push origin main
                     """
                 }
             }

@@ -662,6 +662,61 @@ HPA의 `minReplicas`를 지금 replicas 수와 똑같이 3으로 맞춰서, **HP
 
 ---
 
+## 15. Ingress — 포트 번호 없이, 규칙 기반으로 접속하기 (1단계: 병렬 추가)
+
+### 15.1 지금까지 접속 방식 — NodePort의 한계
+
+지금까지 외부 접속은 전부 `k8s/service-nodeport.yaml`(NodePort, `:30080`) 하나였다. NodePort는 "클러스터의
+모든 노드가 이 포트를 열어서 파드로 바로 연결"해주는 가장 단순한 방식인데, 한계가 있다.
+
+1. **표준 포트(80/443)를 못 씀** — NodePort는 규칙상 30000~32767 범위만 쓸 수 있어서, URL에 항상
+   `:30080`처럼 포트 번호가 노출된다.
+2. **TLS(HTTPS)를 붙일 자리가 없음** — 인증서를 처리할 지점 자체가 없다.
+3. **호스트/경로 기반 라우팅이 안 됨** — 서비스가 늘어나면(Jenkins UI, Grafana 등) 서비스마다 포트를
+   또 하나씩 열어야 한다.
+
+### 15.2 Ingress란
+
+**Ingress**는 그 자체로 트래픽을 처리하는 게 아니라 "이 호스트/경로로 오면 이 Service로 보내라"는
+**라우팅 규칙**이다. 이 규칙을 실제로 읽어서 동작하는 건 별도로 설치하는 **Ingress Controller**(리버스
+프록시 파드, 이 프로젝트는 표준 구현체인 `ingress-nginx` 사용)다. kubeadm은 Ingress Controller를 기본
+제공하지 않아서(관리형 클러스터와 다른 점), 직접 설치해야 한다.
+
+```
+사용자 → <도메인>:80/443 → Ingress Controller(파드) → 규칙(host) 확인 → chaos-demo Service → 파드
+```
+
+### 15.3 왜 1단계는 "병렬 추가"로만 진행했나
+
+GSLB Pool의 헬스체크가 KR1/KR2 양쪽의 `:30080`(NodePort)을 직접 찌르고 있어서, 여기에 바로 손대면
+8절에서 검증한 failover가 깨질 위험이 있다. 그래서 **기존 NodePort(`:30080`)와 GSLB/도메인은 전혀
+안 건드리고**, ingress-nginx Controller를 KR2에 새로운 NodePort(`:30081`/`:30444`)로 추가 설치해서
+"Ingress로 라우팅되는 것" 자체만 별도로 검증하는 방식을 택했다. 실제 도메인의 입구를 Ingress로 바꾸는
+건(TLS까지 붙인 뒤) 다음 단계 결정 사항으로 남겨뒀다.
+
+### 15.4 실제로 어떻게 구성했나
+
+- `k8s/ingress-nginx-values.yaml`: Helm values. `controller.service.type=NodePort`,
+  `nodePorts.http/https`를 기존에 쓰이던 포트(30080 앱, 30880 Jenkins, 30030/30090/30760 모니터링)와
+  안 겹치는 `30081`/`30444`로 고정 지정(안 고정하면 설치마다 랜덤 포트가 배정돼 재현이 안 된다).
+- `k8s/chaos-demo-ingress.yaml`: 새 Service를 만들지 않고 **기존 `chaos-demo-nodeport` Service를 그대로
+  백엔드로 재사용**하는 Ingress 리소스. `host: ingress-test.chaosarena.cloud`는 실제 등록된 DNS가
+  아니라, `curl -H "Host: ..."`나 로컬 `/etc/hosts`(클라이언트 측 설정이라 서버/DNS에 전혀 영향 없음)로만
+  접근하는 테스트 전용 이름이다.
+
+### 15.5 검증한 결과
+
+- `curl -H "Host: ingress-test.chaosarena.cloud" http://<KR2 IP>:30081/api/status` → 실제 앱 응답(200) 확인
+- `curl -H "Host: wrong-host.example.com" ...` → **404** — 아무 요청이나 통과시키는 게 아니라 진짜로
+  host 기반 라우팅을 하고 있다는 증거
+- 기존 `:30080` 직접 접속과 `www.chaosarena.cloud`(GSLB) 접속 모두 그대로 `200` — **회귀 없음** 확인
+
+🎤 **발표 한 줄**: "실제 서비스 입구를 바로 바꾸면 이미 검증해둔 GSLB failover가 깨질 수 있어서, Ingress
+Controller를 새 포트로 병렬로 띄워 라우팅 자체만 먼저 검증하고, 기존 접속 경로에는 회귀가 없는지까지
+확인하는 단계적 접근을 택했습니다."
+
+---
+
 ## 부록: 발표 흐름 추천 (개념 → 데모 연결)
 
 1. **문제 제기**: "서버는 언젠가 죽는다. 죽어도 서비스가 유지되려면?"

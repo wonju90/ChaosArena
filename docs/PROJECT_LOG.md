@@ -284,6 +284,25 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   replicas가 6개로 늘어난 뒤엔 버튼을 반복 눌러도 매번 다른 파드가 걸릴 수 있다 — 검증 때는 각 파드
   IP에 직접 `/chaos/recover`를 호출해 확실하게 전부 껐다(고칠 필요는 없는, 알아두면 좋은 특성).
 
+### 4.19 Ingress 도입 1단계 — GSLB를 안 건드리는 병렬 추가 방식으로 진행
+- **배경**: 선택 기능 목록의 "Ingress+TLS" 중 Ingress만 먼저 진행. 지금 유일한 실제 외부 노출 방식은
+  NodePort(`k8s/service-nodeport.yaml`, `:30080`)뿐이고(`service-loadbalancer.yaml`의 MetalLB는 파일만
+  있고 클러스터에 적용된 적 없음), Ingress Controller도 클러스터에 아예 없었다.
+- **왜 곧바로 실제 입구를 바꾸지 않았나**: GSLB Pool의 헬스체크가 KR1/KR2 양쪽의 `:30080`을 직접 찌르고
+  있어서, 여기에 바로 손대면 이미 검증해둔 failover(4.15절)가 깨질 위험이 있었다. 그래서 사용자와 상의해
+  **기존 NodePort/GSLB는 전혀 안 건드리고, ingress-nginx를 KR2에 새 NodePort(30081/30444)로 병렬
+  추가**해서 라우팅 자체만 먼저 검증하기로 했다. TLS(cert-manager+Let's Encrypt)도 이번엔 빼고 다음
+  작업으로 미뤘다 — Let's Encrypt의 HTTP-01 검증은 실제 80번 포트가 공인 도메인으로 열려있어야 하는데,
+  병렬 테스트 단계에선 그 조건이 안 맞기 때문.
+- **구성**: `k8s/ingress-nginx-values.yaml`(Helm values, NodePort 30081/30444 고정) → Helm으로
+  `ingress-nginx` 설치 → `k8s/chaos-demo-ingress.yaml`(새 Service 없이 기존 `chaos-demo-nodeport`를
+  백엔드로 재사용, host는 실제 DNS 미등록 테스트 전용 이름).
+- **검증**: `curl -H "Host: ingress-test.chaosarena.cloud" http://<KR2 IP>:30081/api/status` → 200 정상.
+  `curl -H "Host: wrong-host.example.com" ...` → 404(진짜 host 기반 라우팅 확인). 기존 `:30080` 직접
+  접속과 `www.chaosarena.cloud`(GSLB) 접속 모두 그대로 200 — **회귀 없음**.
+- **다음 단계(미착수)**: TLS 붙이기, 검증되면 GSLB Pool 헬스체크 대상을 Ingress의 80/443으로 전환하는
+  실제 컷오버 여부 결정.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -347,6 +366,10 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   `chaos-demo`에 적용. 강제였던 podAntiAffinity를 preferred로 완화해 "노드당 파드 1개" 규칙이 스케일
   아웃을 막던 문제를 해결하고, 기존 "CPU 부하" 버튼을 그대로 트리거로 재사용해 실제 3→6 스케일 아웃 →
   5분 안정화 창 후 6→3 스케일 다운까지 전체 라이프사이클 실측 검증 (4.18절)
+- [x] **Ingress 도입 1단계(병렬 추가)** ⭐ — ingress-nginx를 KR2에 새 NodePort(30081/30444)로 설치,
+  기존 `chaos-demo-nodeport` Service를 그대로 백엔드로 재사용하는 Ingress 리소스 추가. 기존
+  NodePort(`:30080`)/GSLB 도메인은 전혀 안 건드리고 병행 검증 완료(호스트 기반 라우팅 정상, 회귀 없음).
+  TLS 및 실제 도메인 컷오버는 다음 단계로 보류 (4.19절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---
@@ -359,7 +382,7 @@ ChaosArena/
 ├── templates/              # base/game/monitor/records/cicd (Jinja2 상속)
 ├── Dockerfile
 ├── requirements.txt
-├── k8s/                    # rbac, deployment, hpa, service(lb/nodeport), metallb, secret 예시
+├── k8s/                    # rbac, deployment, hpa, ingress(-nginx), service(lb/nodeport), metallb, secret 예시
 ├── scripts/                # 01~05 클러스터 구축 + 06 GSLB failover 테스트
 ├── terraform/
 │   ├── providers.tf        # kr1/kr2 provider (Keystone v3)

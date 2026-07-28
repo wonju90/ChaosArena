@@ -1,0 +1,22 @@
+# 1단계(병렬 테스트용) Ingress. 실제 도메인/GSLB는 그대로 두고, ingress-nginx가 잘 라우팅하는지만
+# 별도로 확인하기 위한 것 — host는 실제 등록된 DNS가 아니라 curl -H "Host: ..." 또는 로컬
+# /etc/hosts로만 접근하는 테스트 전용 이름이다. 백엔드는 새 Service를 만들지 않고 기존
+# k8s/service-nodeport.yaml의 chaos-demo-nodeport를 그대로 재사용한다.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chaos-demo
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ingress-test.chaosarena.cloud
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: chaos-demo-nodeport
+                port:
+                  number: 80

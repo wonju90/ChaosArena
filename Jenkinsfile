@@ -5,8 +5,7 @@
 
 def REGISTRY = "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena"
 def IMAGE_TAG = "jenkins-${env.BUILD_NUMBER}"
-// 본인 GitHub 계정으로 만든 ChaosArena-manifests 레포 주소로 바꿀 것 (docs/SETUP_GUIDE.md ArgoCD Part 참고).
-def MANIFESTS_REPO = "github.com/<본인계정>/ChaosArena-manifests.git"
+def MANIFESTS_REPO = "github.com/wonju90/ChaosArena-manifests.git"
 
 pipeline {
     agent {

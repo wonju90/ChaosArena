@@ -3,8 +3,6 @@
 # 실제로 반영되는 앱 매니페스트(deployment.yaml 등)는 이 레포가 아니라 ChaosArena-manifests
 # 레포의 argocd-managed/ 폴더에 있다 — 그 레포가 "GitOps의 source of truth"다.
 #
-# repoURL은 본인 GitHub 계정으로 만든 ChaosArena-manifests 레포 주소로 바꿀 것.
-#
 # 적용 방법: kubectl apply -f k8s/argocd-application.yaml -n argocd
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -15,7 +13,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/<본인계정>/ChaosArena-manifests.git
+    repoURL: https://github.com/wonju90/ChaosArena-manifests.git
     targetRevision: main
     path: argocd-managed
 

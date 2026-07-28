@@ -303,6 +303,23 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **다음 단계(미착수)**: TLS 붙이기, 검증되면 GSLB Pool 헬스체크 대상을 Ingress의 80/443으로 전환하는
   실제 컷오버 여부 결정.
 
+### 4.20 Ingress 도입 2단계 — 포트 재사용으로 GSLB를 안 건드리고 실제 입구로 전환
+- **배경**: 4.19절의 병렬 구조(별도 NodePort 30081/30444)를 검증한 뒤, TLS는 다음으로 미루고 KR2의
+  진짜 입구로 전환했다.
+- **핵심 ① 포트 재사용**: GSLB Pool 헬스체크는 IP만 알고 포트(`:30080`)는 고정 설정이라(4.15절),
+  `chaos-demo-nodeport`를 `NodePort` → `ClusterIP`로 바꿔 30080을 반납하고, `ingress-nginx-values.yaml`의
+  `nodePorts.http`를 30081→30080으로 옮겨 **같은 포트를 ingress-nginx가 대신 갖게** 했다. 그 결과 GSLB
+  콘솔/Terraform 보안그룹을 단 하나도 안 건드리고 전환이 끝났다.
+- **핵심 ② catch-all 전환**: `chaos-demo-ingress.yaml`의 `host` 필드를 제거해 어떤 Host 헤더로 오든
+  받는 규칙으로 바꿨다 — 4.19절에서 "등록 안 된 host → 404"를 라우팅이 동작한다는 증거로 확인했는데,
+  실제 입구가 된 지금은 그 동작이 거꾸로 GSLB 헬스체크(Host 헤더 없이 `/health` 호출)를 막을 위험이었다.
+- **전환 순서**: ClusterIP로 포트 반납 → helm upgrade로 ingress-nginx가 포트 확보 → Ingress catch-all
+  적용. 순서를 반대로 하면 포트 충돌 에러가 난다.
+- **무중단이었던 이유**: 전환 시점에 GSLB가 KR1을 Active로 보고 있어서 KR2로는 애초에 실사용자 트래픽이
+  안 가는 중이었다.
+- **검증**: `curl http://<KR2 IP>:30080/health`(Host 헤더 없음, GSLB와 동일 요청) → 200. `/api/status`
+  정상 데이터. `www.chaosarena.cloud`(GSLB)는 그대로 KR1 응답, 전혀 영향 없음 — 회귀 없음.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -366,10 +383,11 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   `chaos-demo`에 적용. 강제였던 podAntiAffinity를 preferred로 완화해 "노드당 파드 1개" 규칙이 스케일
   아웃을 막던 문제를 해결하고, 기존 "CPU 부하" 버튼을 그대로 트리거로 재사용해 실제 3→6 스케일 아웃 →
   5분 안정화 창 후 6→3 스케일 다운까지 전체 라이프사이클 실측 검증 (4.18절)
-- [x] **Ingress 도입 1단계(병렬 추가)** ⭐ — ingress-nginx를 KR2에 새 NodePort(30081/30444)로 설치,
-  기존 `chaos-demo-nodeport` Service를 그대로 백엔드로 재사용하는 Ingress 리소스 추가. 기존
-  NodePort(`:30080`)/GSLB 도메인은 전혀 안 건드리고 병행 검증 완료(호스트 기반 라우팅 정상, 회귀 없음).
-  TLS 및 실제 도메인 컷오버는 다음 단계로 보류 (4.19절)
+- [x] **Ingress 도입** ⭐ — 1단계(병렬): ingress-nginx를 KR2에 새 NodePort(30081/30444)로 설치해
+  라우팅만 우선 검증(4.19절). 2단계(실제 전환): 포트 번호를 그대로 재사용해 `chaos-demo-nodeport`를
+  ClusterIP로 바꾸고 ingress-nginx가 30080을 대신 갖게 해서 **GSLB 설정을 하나도 안 건드리고** KR2의
+  실제 입구를 Ingress로 전환, host를 catch-all로 바꿔 헬스체크 회귀도 방지. `/health`·`/api/status`
+  실측 확인, GSLB(`www.chaosarena.cloud`)는 그대로 KR1 응답 확인(회귀 없음) (4.20절). TLS는 다음 단계로 보류.
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

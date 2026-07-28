@@ -1,10 +1,11 @@
-# ingress-nginx Controller (KR2 전용, 1단계 병렬 테스트).
-# MetalLB L2 모드가 이 클라우드 네트워크에서 막힐 수 있어(k8s/service-loadbalancer.yaml 주석 참고)
-# LoadBalancer 대신 NodePort로 노출한다. 30080(앱)/30880(Jenkins)/30030,30090,30760(모니터링)과
-# 안 겹치는 포트로 고정 지정 — 고정 안 하면 매 설치마다 랜덤 포트가 배정돼 재현이 안 된다.
+# ingress-nginx Controller (KR2 전용).
+# 1단계(병렬 테스트)에선 30081/30444라는 별도 포트로 띄워서 라우팅만 검증했고, 2단계에서 실제 입구로
+# 전환하면서 http를 30080(원래 chaos-demo-nodeport가 쓰던 포트)으로 옮겼다. 포트 번호를 그대로
+# 재사용했기 때문에 GSLB Pool의 헬스체크(IP:30080 고정)는 전혀 안 건드려도 된다.
+# https는 아직 TLS 인증서가 없어서 당장 쓰이진 않지만, 나중에 TLS 붙일 때 그대로 쓸 수 있게 유지.
 controller:
   service:
     type: NodePort
     nodePorts:
-      http: 30081
+      http: 30080
       https: 30444

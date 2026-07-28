@@ -704,16 +704,46 @@ GSLB Pool의 헬스체크가 KR1/KR2 양쪽의 `:30080`(NodePort)을 직접 찌�
   아니라, `curl -H "Host: ..."`나 로컬 `/etc/hosts`(클라이언트 측 설정이라 서버/DNS에 전혀 영향 없음)로만
   접근하는 테스트 전용 이름이다.
 
-### 15.5 검증한 결과
+### 15.5 검증한 결과 (1단계, 병렬)
 
 - `curl -H "Host: ingress-test.chaosarena.cloud" http://<KR2 IP>:30081/api/status` → 실제 앱 응답(200) 확인
 - `curl -H "Host: wrong-host.example.com" ...` → **404** — 아무 요청이나 통과시키는 게 아니라 진짜로
   host 기반 라우팅을 하고 있다는 증거
 - 기존 `:30080` 직접 접속과 `www.chaosarena.cloud`(GSLB) 접속 모두 그대로 `200` — **회귀 없음** 확인
 
-🎤 **발표 한 줄**: "실제 서비스 입구를 바로 바꾸면 이미 검증해둔 GSLB failover가 깨질 수 있어서, Ingress
-Controller를 새 포트로 병렬로 띄워 라우팅 자체만 먼저 검증하고, 기존 접속 경로에는 회귀가 없는지까지
-확인하는 단계적 접근을 택했습니다."
+### 15.6 2단계 — 병렬 테스트 → KR2의 실제 입구로 전환 (TLS 제외)
+
+1단계로 라우팅 자체가 정상 동작하는 걸 확인한 뒤, TLS는 다음으로 미루고 **이 구조를 KR2의 진짜 입구로
+전환**했다. 핵심은 두 가지였다.
+
+**① 포트 번호를 그대로 재사용해서 GSLB를 안 건드림**: GSLB Pool은 IP만 알고 포트(`:30080`)는 헬스체크
+설정에 고정돼 있다(8.4절). `chaos-demo-nodeport`(원래 NodePort:30080)를 `type: ClusterIP`로 바꿔서
+포트를 반납하고, `ingress-nginx-values.yaml`의 `nodePorts.http`를 `30081` → `30080`으로 옮겨 **같은
+포트 번호를 ingress-nginx가 대신 갖게** 했다. 그 결과 GSLB 콘솔 설정도, Terraform 보안그룹도 단 하나도
+안 건드리고 전환이 끝났다 — TLS를 붙이려면 실제 80번 포트로 공인 도메인이 필요해지지만, 이번엔 TLS를
+빼서 그 복잡도 자체가 없었다.
+
+**② `host` 필드를 빼서 catch-all로 전환**: 1단계에서 라우팅이 "진짜 동작한다"는 증거로 확인했던
+"등록 안 된 host → 404" 동작이, 실제 입구가 된 지금은 거꾸로 **위험 요인**이 된다 — GSLB 헬스체커가
+Host 헤더 없이(또는 다른 값으로) `/health`를 찌르면 nginx가 "모르는 host"로 판단해 404를 낼 수 있기
+때문이다. 그래서 `chaos-demo-ingress.yaml`의 `rules[0].host`를 아예 제거해 **어떤 Host로 오든 다 받는
+catch-all 규칙**으로 바꿨다.
+
+**전환 순서**: ① `chaos-demo-nodeport`를 ClusterIP로 apply(30080 반납) → ② `helm upgrade`로 ingress-nginx가
+30080을 잡게 함 → ③ Ingress를 catch-all로 apply. 포트를 비우기 전에 Ingress가 먼저 30080을 요청하면
+충돌이 나므로 이 순서가 중요했다.
+
+**무중단이었던 이유**: 이 시점에 GSLB는 KR1을 Active로 보고 있어서 KR2로는 실사용자 트래픽이 애초에
+안 가는 중이었다 — Standby 클러스터부터 먼저 전환 연습을 해볼 수 있었던 것도 Active/Standby 구조의
+부수적 이점이었다.
+
+**검증한 결과(2단계)**: GSLB가 실제로 보내는 것과 동일한 요청(`curl http://<KR2 IP>:30080/health`, Host
+헤더 없음) → 200. `/api/status`도 정상 데이터 반환. 1단계 때 쓰던 테스트 host로도(catch-all이니) 여전히
+통과. `www.chaosarena.cloud`(GSLB)는 그대로 KR1을 가리키며 전혀 영향받지 않음 — **회귀 없음**.
+
+🎤 **발표 한 줄**: "Ingress를 실제 입구로 바꿀 때 포트 번호를 그대로 재사용해서 GSLB 설정은 하나도
+안 건드렸고, host 기반 라우팅 규칙을 catch-all로 바꿔서 헬스체크가 막히지 않게 했습니다 — 이미 검증해둔
+failover 구조를 깨지 않으면서 접속 경로만 바꾼 겁니다."
 
 ---
 

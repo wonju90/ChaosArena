@@ -27,6 +27,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "delete"]   # delete 권한이 핵심 (조회+삭제 둘 다 필요)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["chaos-deploy-history"]   # 이 ConfigMap 하나만 읽게 제한 (최소 권한)
+    verbs: ["get"]   # CI/CD 탭의 배포 히스토리 타임라인 — 쓰기는 Jenkins가 Git 커밋으로만 한다
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1

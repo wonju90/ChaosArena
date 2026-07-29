@@ -2,11 +2,14 @@
 // 배포(CD)는 여기서 kubectl로 직접 하지 않고, ChaosArena-manifests 레포에 이미지 태그를 커밋+푸시하면
 // 클러스터 안의 ArgoCD가 그 변경을 감지해서 스스로 반영한다(GitOps, Pull 모델).
 // 배경/설계 근거는 docs/PROJECT_LOG.md 3.5절, docs/CONCEPTS.md 11~13절·Push vs Pull 절 참고.
+// 배포 후에는 앱 자신의 /api/status로 새 버전이 실제로 응답하는지 확인하고, 타임아웃되면 이전
+// 버전으로 되돌리는 커밋을 자동으로 push한다(자동 롤백, CONCEPTS.md 17절).
+// 성공/롤백 결과는 매번 chaos-deploy-history ConfigMap에 한 줄씩 기록해서 CI/CD 탭의 배포
+// 히스토리 타임라인에 남긴다(CONCEPTS.md 18절).
 
 def REGISTRY = "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena"
 def IMAGE_TAG = "jenkins-${env.BUILD_NUMBER}"
-// 본인 GitHub 계정으로 만든 ChaosArena-manifests 레포 주소로 바꿀 것 (docs/SETUP_GUIDE.md ArgoCD Part 참고).
-def MANIFESTS_REPO = "github.com/<본인계정>/ChaosArena-manifests.git"
+def MANIFESTS_REPO = "github.com/wonju90/ChaosArena-manifests.git"
 
 pipeline {
     agent {
@@ -141,6 +144,18 @@ spec:
                         git clone https://\${GIT_MANIFESTS_TOKEN}@${MANIFESTS_REPO} manifests-repo
                         cd manifests-repo/argocd-managed
 
+                        # 헬스체크 실패 시 되돌릴 수 있도록, 덮어쓰기 전의 값을 워크스페이스에 파일로
+                        # 남겨둔다 — 워크스페이스는 스테이지/컨테이너를 넘나들며 공유되므로, 다음
+                        # "Verify Deployment" 스테이지에서 그대로 읽어서 롤백에 쓴다.
+                        PREV_IMAGE=\$(yq eval '.spec.template.spec.containers[0].image' deployment.yaml)
+                        PREV_BUILD_NUMBER=\$(yq eval '(.spec.template.spec.containers[0].env[] | select(.name == "BUILD_NUMBER") | .value)' deployment.yaml)
+                        PREV_GIT_COMMIT=\$(yq eval '(.spec.template.spec.containers[0].env[] | select(.name == "GIT_COMMIT") | .value)' deployment.yaml)
+                        PREV_DEPLOY_DURATION=\$(yq eval '(.spec.template.spec.containers[0].env[] | select(.name == "DEPLOY_DURATION_SECONDS") | .value)' deployment.yaml)
+                        echo "export PREVIOUS_IMAGE=\$PREV_IMAGE" > ../rollback-info.env
+                        echo "export PREVIOUS_BUILD_NUMBER=\$PREV_BUILD_NUMBER" >> ../rollback-info.env
+                        echo "export PREVIOUS_GIT_COMMIT=\$PREV_GIT_COMMIT" >> ../rollback-info.env
+                        echo "export PREVIOUS_DEPLOY_DURATION=\$PREV_DEPLOY_DURATION" >> ../rollback-info.env
+
                         yq eval -i '(.spec.template.spec.containers[0].image) = "${REGISTRY}:${IMAGE_TAG}"' deployment.yaml
                         yq eval -i '(.spec.template.spec.containers[0].env[] | select(.name == "BUILD_NUMBER") | .value) = "${env.BUILD_NUMBER}"' deployment.yaml
                         yq eval -i '(.spec.template.spec.containers[0].env[] | select(.name == "GIT_COMMIT") | .value) = "${env.GIT_COMMIT_SHORT}"' deployment.yaml
@@ -152,6 +167,81 @@ spec:
                         git commit -m "chaos-demo: bump to ${IMAGE_TAG} (build #${env.BUILD_NUMBER}, ${env.GIT_COMMIT_SHORT})" || echo "변경 없음, 커밋 스킵"
                         git push origin main
                     """
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            // ArgoCD가 방금 커밋을 감지해 실제로 반영했는지 확인한다. Jenkins는 클러스터 접근 권한이
+            // 없으므로(GitOps 전환 때 의도적으로 제거, PROJECT_LOG 4.22절) kubectl이나 ArgoCD API가
+            // 아니라 앱 자신의 /api/status를 클러스터 내부 Service DNS로 직접 호출해서 확인한다 — 새
+            // 권한이 전혀 필요 없다. /health만 보면 안 되는 이유: 롤링 업데이트 중엔 구버전 파드가 아직
+            // 응답할 수 있어서 /health는 계속 200이 나온다. build_number가 방금 push한 값과 일치하는지
+            // 까지 확인해야 "새 버전이 실제로 응답 중"이라는 게 증명된다.
+            steps {
+                container('git') {
+                    script {
+                        def endpoint = "http://chaos-demo-nodeport.default.svc.cluster.local/api/status"
+                        def healthy = false
+                        for (int i = 0; i < 12; i++) {
+                            def status = sh(
+                                script: "wget -qO- --timeout=5 ${endpoint} || echo 'UNREACHABLE'",
+                                returnStdout: true
+                            ).trim()
+                            def compact = status.replaceAll(/\s+/, "")
+                            if (compact.contains('"build_number":"' + env.BUILD_NUMBER + '"')) {
+                                healthy = true
+                                break
+                            }
+                            sleep 10
+                        }
+
+                        if (healthy) {
+                            // 배포 히스토리 타임라인용 성공 이벤트를 한 줄 기록한다(JSON Lines, 최신이 맨 위).
+                            // history.jsonl 자체가 아직 없으면(최초 부트스트랩 전) yq가 에러를 내므로,
+                            // deploy-history-configmap.yaml은 반드시 미리 레포에 존재해야 한다
+                            // (docs/SETUP_GUIDE.md 참고, 최초 1회만 사용자가 직접 push).
+                            sh """
+                                cd manifests-repo/argocd-managed
+
+                                TIMESTAMP=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                                NEW_LINE='{"build_number":"${env.BUILD_NUMBER}","git_commit":"${env.GIT_COMMIT_SHORT}","status":"success","timestamp":"'"\$TIMESTAMP"'"}'
+
+                                CURRENT_HISTORY=\$(yq eval '.data["history.jsonl"] // ""' deploy-history-configmap.yaml)
+                                export NEW_HISTORY=\$({ echo "\$NEW_LINE"; echo "\$CURRENT_HISTORY"; } | head -n 10)
+                                yq eval -i '.data["history.jsonl"] = strenv(NEW_HISTORY)' deploy-history-configmap.yaml
+
+                                git add deploy-history-configmap.yaml
+                                git commit -m "history: chaos-demo build #${env.BUILD_NUMBER} 배포 성공 기록" || echo "변경 없음, 커밋 스킵"
+                                git push origin main
+                            """
+                        }
+
+                        if (!healthy) {
+                            echo "배포 후 약 2분 동안 build_number가 ${env.BUILD_NUMBER}로 바뀌지 않음 — 이전 버전으로 롤백합니다."
+                            sh """
+                                cd manifests-repo/argocd-managed
+                                source ../rollback-info.env
+
+                                yq eval -i '(.spec.template.spec.containers[0].image) = strenv(PREVIOUS_IMAGE)' deployment.yaml
+                                yq eval -i '(.spec.template.spec.containers[0].env[] | select(.name == "BUILD_NUMBER") | .value) = strenv(PREVIOUS_BUILD_NUMBER)' deployment.yaml
+                                yq eval -i '(.spec.template.spec.containers[0].env[] | select(.name == "GIT_COMMIT") | .value) = strenv(PREVIOUS_GIT_COMMIT)' deployment.yaml
+                                yq eval -i '(.spec.template.spec.containers[0].env[] | select(.name == "DEPLOY_DURATION_SECONDS") | .value) = strenv(PREVIOUS_DEPLOY_DURATION)' deployment.yaml
+
+                                # 배포 히스토리 타임라인용 롤백 이벤트도 같은 커밋에 같이 기록한다.
+                                TIMESTAMP=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                                NEW_LINE='{"build_number":"${env.BUILD_NUMBER}","git_commit":"${env.GIT_COMMIT_SHORT}","status":"rollback","recovered_build":"'"\$PREVIOUS_BUILD_NUMBER"'","timestamp":"'"\$TIMESTAMP"'"}'
+                                CURRENT_HISTORY=\$(yq eval '.data["history.jsonl"] // ""' deploy-history-configmap.yaml)
+                                export NEW_HISTORY=\$({ echo "\$NEW_LINE"; echo "\$CURRENT_HISTORY"; } | head -n 10)
+                                yq eval -i '.data["history.jsonl"] = strenv(NEW_HISTORY)' deploy-history-configmap.yaml
+
+                                git add deployment.yaml deploy-history-configmap.yaml
+                                git commit -m "ROLLBACK: chaos-demo build #${env.BUILD_NUMBER} 헬스체크 실패, build #\$PREVIOUS_BUILD_NUMBER로 복구"
+                                git push origin main
+                            """
+                            error("배포 후 헬스체크 실패 — 이전 빌드로 자동 롤백 커밋을 push했습니다.")
+                        }
+                    }
                 }
             }
         }

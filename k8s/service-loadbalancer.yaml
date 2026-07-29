@@ -1,5 +1,10 @@
-# MetalLB가 정상 동작할 때 사용하는 Service. EXTERNAL-IP가 <pending>으로 안 바뀌면
-# service-nodeport.yaml로 폴백할 것 (05-install-metallb.sh 참고).
+# type: LoadBalancer는 원래 클라우드가 알아서 외부 IP를 붙여주는 타입인데, 이 Service를 만든
+# kubeadm 자체 구축 클러스터엔 그 역할을 해줄 클라우드 컨트롤러가 없다 — 그래서 MetalLB(온프레미스용
+# LoadBalancer 구현체)를 별도로 설치해 그 역할을 대신하게 하는 게 이 파일의 전제다.
+# 실제로는 이 NHN Cloud 네트워크에서 MetalLB의 L2(ARP) 모드가 막혀 EXTERNAL-IP가 계속 <pending>으로
+# 남았다(SETUP_GUIDE.md 2.6절) — 그래서 이 프로젝트는 결국 이 파일을 안 쓰고 service-nodeport.yaml로
+# 폴백해 그게 실제 접속 경로가 됐다. 이 파일은 "다른 클라우드/온프레미스 환경에서 MetalLB의 L2 모드가
+# 정상 동작한다면 이렇게 쓴다"는 참고용으로 레포에 남겨둔다.
 apiVersion: v1
 kind: Service
 metadata:

@@ -1,0 +1,103 @@
+# -----------------------------------------------------------------------------
+# 기록실(리더보드) 데이터 전용 Redis. 공식 redis:7-alpine 이미지를 태그 고정해서 쓴다
+# (Bitnami 차트/이미지가 아님 - 이 프로젝트가 Jenkins 설치 때 Bitnami 태그 소실 문제를
+# 겪은 적이 있어서(docs/PROJECT_LOG.md 4.14절), 이미지 계층에서도 같은 리스크를 피한다).
+# Helm 차트도 안 쓴다 - ArgoCD의 기본 동기화는 apiVersion/kind가 있는 순수 매니페스트만
+# 반영하고 Helm values는 GitOps 대상 밖이라(docs/CONCEPTS.md 16.2절), 컨테이너 하나 굴리는
+# 것치고 새 Application(source.helm)까지 만드는 건 배보다 배꼽이 크다.
+#
+# 비밀번호는 --requirepass로 컨테이너 시작 커맨드에 환경변수로 주입한다(k8s/redis-secret.yaml,
+# k8s/redis-secret.example.yaml 참고 - k8s/secret-slack.example.yaml과 같은 패턴).
+# RDB 스냅샷(--save)만 켜고 AOF는 안 쓴다 - 게임 리더보드 수준 데이터에 매 쓰기 fsync까지는
+# 과함(장애 시 최근 몇 초 유실은 감수 가능).
+#
+# liveness/readiness는 tcpSocket으로만 확인한다 - exec 프로브에 비밀번호를 실어 보내면
+# `kubectl describe pod`에 그대로 노출되기 때문에 일부러 avoid.
+#
+# 적용 방법: kubectl apply -f k8s/redis-secret.yaml -f k8s/redis.yaml -f k8s/redis-pv.yaml
+# (redis-pv.yaml 적용 전, 이 파일이 가리키는 워커 노드에 hostPath 디렉터리를 먼저 만들어야
+# 한다 - redis-pv.yaml 상단 주석의 사전 준비 명령 참고)
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: default
+  labels:
+    app: redis
+spec:
+  clusterIP: None   # StatefulSet의 governing service - 헤드리스로 둬야 함
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: default
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      # redis-pv.yaml의 hostPath가 있는 노드에 고정 - 반드시 그 파일과 같은 노드 이름이어야 한다.
+      nodeSelector:
+        kubernetes.io/hostname: chaosarena-worker2-kr2
+      containers:
+        - name: redis
+          image: redis:7.2.5-alpine
+          command: ["/bin/sh", "-c"]
+          args:
+            - >
+              exec redis-server
+              --requirepass "$REDIS_PASSWORD"
+              --save 60 1000
+              --dir /data
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 5
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: redis-local   # redis-pv.yaml의 storageClassName과 반드시 일치해야 정적 바인딩됨
+        resources:
+          requests:
+            storage: 1Gi

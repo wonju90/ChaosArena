@@ -83,6 +83,19 @@ spec:
                   name: slack-webhook
                   key: url
                   optional: true # secret이 없어도 파드가 정상적으로 뜨도록
+            # 기록실(리더보드) 데이터 저장소. REDIS_HOST가 비어있으면 app.py가 자동으로
+            # 파드 메모리로 저하하므로, Redis를 아직 안 붙인 클러스터(KR1 등)에도 이 필드를
+            # 그대로 둬도 안전하다 - k8s/redis.yaml 참고.
+            - name: REDIS_HOST
+              value: "redis.default.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+                  optional: true # secret이 없어도(Redis 미설치 클러스터) 파드가 정상적으로 뜨도록
             # ArgoCD 도입 전엔 Jenkins가 배포 직후 `kubectl set env`로 즉석에서 넣어줬던 값들이라
             # 이 파일엔 원래 없었다. GitOps에서는 "클러스터의 실제 상태 = Git의 내용"이어야 하므로
             # (그래야 ArgoCD self-heal이 이 값들을 안 지운다), 이제 여기 선언해두고 Jenkins가

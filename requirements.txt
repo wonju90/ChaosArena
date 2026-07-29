@@ -2,3 +2,4 @@ flask
 kubernetes
 prometheus_client
 requests
+redis==5.0.8

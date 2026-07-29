@@ -371,6 +371,199 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **작업 방식 변화**: 사용자가 "인프라를 직접 실행해보며 배우고 싶다"고 요청해서, ArgoCD 설치·새
   GitHub 레포 생성·Jenkins credential 등록 같은 실행형 작업은 이번부터 `docs/SETUP_GUIDE.md`에
   가이드로만 제시하고 직접 실행은 안 함(코드/설정 파일 편집만 담당).
+- **최종 실측 검증 완료** ⭐ — 더미 커밋 push → Jenkins build #17이 SUCCESS로 끝나고
+  `ChaosArena-manifests`에 새 커밋(`d8aed29`) 생성 → `kubectl -n argocd get application chaos-demo`가
+  `Synced`/`Healthy` → `kubectl get deployment chaos-demo`의 이미지 태그가 `jenkins-17`로 일치하는 것까지
+  Jenkins→Git→ArgoCD→클러스터 전체 파이프라인을 end-to-end로 확인. 이어서 앱 코드에 실제 변경(footer
+  문구)을 넣어 build #18로 한 번 더 반복 검증.
+- **`ChaosArena-manifests` 레포에 GitHub Webhook 등록 확인** — Payload URL
+  `https://<마스터_공인IP>:30443/api/webhook`, SSL verification은 ArgoCD가 자체 서명 인증서를 쓰기 때문에
+  Disable로 설정. 등록 직후 GitHub가 보낸 `ping` 이벤트에 ArgoCD가 `200`으로 응답한 것을 Recent
+  Deliveries에서 확인 — 이제 ArgoCD 기본 3분 폴링을 기다릴 필요 없이 커밋 직후 몇 초 안에 반영된다.
+
+### 4.23 GitOps 검증 중 Jenkins 에이전트가 영원히 "접속 대기"에 멈춤 — TCP 포트 바인딩 레이스 + K8s Service 고정 포트 불일치 ⭐
+- **증상**: ArgoCD 도입 검증을 위해 더미 커밋을 push했더니, Jenkins 에이전트 파드(`kaniko`/`cosign`/`git`/
+  `jnlp` 4개 컨테이너)는 전부 `Running`인데 Jenkins가 "빌드 태스크를 스케줄링하지 못하고 있다"며 빌드가
+  끝없이 멈췄다(build #14, #15 둘 다).
+- **1차 원인 격리**: `kubectl get pods -n jenkins`로 보니 `jenkins-0` 컨트롤러 자체가 `Unknown` 상태였다가,
+  다시 보니 `Running`인데도 빌드가 안 풀렸다. 컨트롤러 로그(`kubectl logs jenkins-0 -c jenkins`)에서
+  결정적 단서 발견:
+  ```
+  WARNING  Jenkins#launchTcpSlaveAgentListener: Failed to listen to incoming agent
+  connections through port 50000. Change the port number
+  ```
+  이 WARNING의 발생 시각이 바로 몇 시간 전 4.16절 크래시루프를 고치려고 `kubectl delete pod jenkins-0`로
+  강제 재생성했던 시점과 일치했다 — 컨테이너가 막 재시작된 직후, 커널이 이전 프로세스의 소켓 상태를 아직
+  정리 못한 타이밍에 첫 바인딩 시도가 실패한 것으로 보인다(재시작 직후 한 번만 발생하는 레이스 컨디션,
+  4.16절 emptyDir 오염과 같은 "재시작 타이밍 문제" 계열).
+- **연쇄 효과**: 이 바인딩 실패로 `TcpSlaveAgentListener` 객체 자체가 생성되지 않았고, 그 결과 에이전트가
+  접속 위치를 확인하려 두드리는 `/tcpSlaveAgentListener/` HTTP 엔드포인트가 아예 존재하지 않아 모든
+  에이전트가 `404 Not Found`를 받으며 영원히 재시도만 반복했다(`jnlp` 컨테이너 로그로 확인).
+- **1차 시도(Random 포트)의 함정**: Manage Jenkins → Security → Agents에서 TCP 포트를 Fixed 50000 →
+  Random으로 바꿔 저장했더니 404는 사라졌다(설정을 저장하는 행위 자체가 리스너를 재초기화시켰고, 이번엔
+  타이밍 문제가 이미 지나가 있어 바인딩이 성공한 것). 하지만 곧 새 에러가 나왔다:
+  ```
+  Agent discovery successful (Agent port: 50000) → Connecting to jenkins-agent...:50000
+  → Connection refused
+  ```
+  원인: 이 프로젝트의 Kubernetes Service(`jenkins-agent`)와 모든 에이전트 파드의 `JENKINS_TUNNEL` 환경
+  변수는 Helm 배포 시점에 **고정된 포트 50000**으로 이미 배선돼 있는데, 리스너가 실제로는 랜덤 포트에
+  뜨면서 Service가 전달하는 50000번 트래픽을 아무도 안 듣게 된 것 — "포트 번호를 바꾸라"는 에러 메시지를
+  액면 그대로 따른 게 오히려 Kubernetes 고정 배선과 어긋나는 새 문제를 만든 사례.
+- **최종 해결**: 설정을 다시 Fixed 50000으로 되돌리고 저장(→ 리스너 재초기화 재트리거) + `jenkins-0` 파드
+  한 번 더 완전 재생성. 이번엔 (a) 최초의 타이밍 문제도 이미 사라졌고 (b) 값도 Service/에이전트가 기대하는
+  50000과 일치해서 정상 동작. build #17이 `Update Manifests Repo` 스테이지까지 SUCCESS로 완주.
+- **교훈**: Jenkins가 뱉는 에러 메시지("Change the port number")를 액면 그대로 믿고 설정값 자체를 바꾸기
+  전에, 그 값이 Kubernetes Service/환경변수 등 **다른 곳에도 고정 배선돼 있는지**부터 확인했어야 했다.
+  결과적으로 문제를 실제로 푼 건 "포트 값 변경"이 아니라 "설정 저장 → 리스너 재초기화"였다.
+
+### 4.24 GSLB 우선순위 재조정 — 풀 스펙 클러스터(KR2)를 Active로
+- **배경**: 4.15절에서 GSLB를 처음 구성할 때 Pool 이름을 `kr1-active`(우선순위1)/`kr2-standby`(우선순위2)로
+  만들었는데, 이후 KR1은 RAM 쿼터 문제로 최소 스펙 테스트 클러스터(마스터1+워커1)로 남고 Jenkins/Prometheus/
+  ArgoCD 등 풀 스펙 구성은 전부 KR2에 올라갔다. 그 결과 **실제 서비스 트래픽이 계속 최소 스펙 클러스터로
+  가고, 정작 잘 갖춰진 KR2는 대기만 하는** 상태로 방치돼 있었다 — 인프라 지도를 다이어그램으로 그려보다가
+  발견.
+- **변경**: NHN Cloud 콘솔 → DNS Plus → GSLB → `chaosarena` → 연결된 Pool의 우선순위를 `kr2-standby`=1,
+  `kr1-active`=2로 수정(콘솔에서 "Pool 연결 수정"으로 우선순위 숫자만 바꾸는 것 — GSLB 자체가 Terraform
+  미지원이라 4.15절 때처럼 콘솔 작업).
+- **Pool 이름은 그대로 둠**: `kr1-active`/`kr2-standby`라는 이름 자체는 이제 실제 우선순위와 반대로 읽히지만
+  (`kr2-standby`가 실제로는 1순위), NHN Cloud 콘솔에서 Pool 이름 변경 자체가 지원되지 않아 이름은 생성 당시
+  그대로 남겨뒀다. **실제 동작은 이름이 아니라 우선순위 숫자로 결정**되므로 기능상 문제는 없다 — 콘솔을 볼
+  다음 사람을 위해 이 문서에 명시.
+- **검증**: 우선순위 변경 직후(TTL 30초) `dig +short www.chaosarena.cloud` → `114.110.162.53`(KR2 마스터
+  공인IP) 확인. 트래픽이 실제로 KR2로 전환된 것을 확인.
+
+### 4.25 Jenkins 자동 롤백 — 배포 후 헬스체크 실패 시 이전 버전으로 자동 복구
+- **배경**: "다음 작업 리스트업"에서 선택한 항목. 지금까지는 Jenkins가 `ChaosArena-manifests`에 새
+  이미지 태그를 커밋+push하는 순간 빌드가 SUCCESS로 끝났다 — 그 이미지가 실제로 클러스터에서 건강하게
+  뜨는지는 아무도 확인하지 않았다.
+- **방식 결정**: Argo Rollouts(카나리+자동분석을 지원하는 업계 표준 도구) 대신 **가벼운 자체 구현**을
+  택함 — 새 CRD/컨트롤러 없이, 기존 Jenkinsfile에 `Verify Deployment` 스테이지 하나만 추가. 사용자가
+  프로젝트 규모 대비 학습·설명 부담이 적은 쪽을 선택.
+- **새 크레덴셜 없이 배포 상태를 확인하는 방법**: Jenkins는 GitOps 전환(4.22절) 때 클러스터 접근
+  권한을 의도적으로 전부 제거했다. 여기서 kubectl이나 ArgoCD API 접근 권한을 새로 추가하면 그 원칙이
+  무너진다. 그래서 앱이 이미 갖고 있는 `/api/status`를 **클러스터 내부 Service DNS**
+  (`http://chaos-demo-nodeport.default.svc.cluster.local/api/status`)로 직접 호출하는 방식을 택했다 —
+  순수 네트워크 호출이라 새 권한이 전혀 필요 없고, GSLB가 어느 리전을 Active로 보고 있는지와도
+  무관하다(4.24절의 GSLB 상태에 의존하지 않음).
+- **`/health`가 아니라 `build_number`를 확인하는 이유**: 롤링 업데이트(`maxSurge:0/maxUnavailable:1`)
+  중엔 구버전 파드가 아직 살아있어서 `/health`는 계속 200을 준다. `/api/status`의 `build_number`가
+  방금 push한 빌드 번호와 실제로 일치하는지까지 확인해야 "새 버전이 진짜 응답 중"이라는 게 증명된다.
+- **롤백 구현**: `Update Manifests Repo` 스테이지에서 새 값을 쓰기 직전에 이전 값(이미지 태그,
+  `BUILD_NUMBER`/`GIT_COMMIT`/`DEPLOY_DURATION_SECONDS`)을 `yq eval`(읽기)로 캡처해 워크스페이스에
+  `rollback-info.env` 파일로 저장. `Verify Deployment`가 10초 간격 최대 12회(약 2분) 폴링 후에도
+  `build_number`가 안 바뀌면, 그 파일을 `source`하고 yq의 `strenv()` 함수로 이전 값을 다시 써넣어
+  `"ROLLBACK: ..."` 커밋을 push한다 — 롤백도 클러스터를 직접 안 건드리고 Git 커밋 하나로 처리된다
+  (GitOps 원칙이 롤백에도 그대로 적용).
+- **빌드 결과**: 롤백이 발생하면 `error()`로 파이프라인을 **FAILURE**로 마킹 — 롤백 자체는 성공해도
+  "이 배포는 실패했다"는 신호가 Jenkins 화면에 바로 보이게 함.
+- **변경 파일**: `Jenkinsfile`만 수정(새 인프라 설치 없음) — `Update Manifests Repo` 스테이지에 이전값
+  캡처 로직 추가, 새 `Verify Deployment` 스테이지 추가.
+- **실제 검증 결과 + 발견한 한계**: 일부러 `/health`를 깨서 push했더니 build #22가 헬스체크 타임아웃
+  → `"ROLLBACK: ... build #21로 복구"` 커밋이 자동으로 push되고 빌드가 FAILURE로 표시되는 것까지
+  라이브로 확인했다. 다만 그 build #21 자체가 (검증 로직 도입 전 빌드라) 이미 파드가 안 뜨는 상태였던
+  걸 뒤늦게 발견 — **단일 단계 롤백은 "바로 이전 버전"으로만 되돌리기 때문에, 그 이전 버전 자체가 이미
+  나쁜 상태면 복구가 안 되는 한계**가 있다(연속 실패 케이스). `/health`를 정상으로 되돌린 뒤 다시
+  push해서 최종적으로 정상 복구됨을 확인. 이 한계는 발표에서 "가벼운 자체 구현이 커버 못 하는 지점"으로
+  솔직하게 설명할 수 있는 지점으로 남겨둔다(Argo Rollouts 같은 이력 기반 롤백 도구라면 해결되는 문제).
+
+### 4.26 CI/CD 탭 배포 히스토리 타임라인 — 성공/롤백 이력을 화면에 남기기
+- **배경**: 4.25절의 자동 롤백은 실제로 잘 동작했지만, CI/CD 탭 화면에는 그 흔적이 안 남았다 — 롤백이
+  일어나도 화면은 그냥 빌드 번호가 하나 줄어든 정상 배포처럼 보였다. 사용자가 "롤백 과정을 대시보드에
+  어떻게 보여줄지 고민해보자"고 제안해서 진행.
+- **저장 방식**: 새 DB/Redis 없이, `app.py`가 이미 갖고 있던 in-cluster ServiceAccount
+  (`chaos-dashboard-sa`)에 `configmaps` 읽기(`get`) 권한만 추가(`resourceNames`로 이 ConfigMap 하나만
+  제한, 최소 권한 유지). ConfigMap(`chaos-deploy-history`)도 `deployment.yaml`처럼
+  `ChaosArena-manifests/argocd-managed/`에 두고 ArgoCD가 동기화 — 쓰기는 여전히 Jenkins→Git 커밋뿐,
+  앱은 읽기만 한다(GitOps/권한 최소화 원칙 그대로 유지).
+- **데이터 형식**: JSON 배열이 아니라 JSON Lines(줄 하나 = 이벤트 하나, 최신이 맨 위) — Jenkins의 git
+  컨테이너엔 `jq`가 없어서 배열 조작이 번거로운데, JSON Lines는 "새 줄 붙이고 `head -n 10`으로 자르기"만
+  하면 돼서 기존 `yq`/`head`만으로 충분하다.
+- **기록 시점**: `Update Manifests Repo`가 아니라 결과를 확인한 뒤인 `Verify Deployment` 스테이지에서만
+  기록 — 미리 "성공"으로 적어두면 그 뒤 롤백될 때 이미 틀린 기록이 남는 문제(낙관적 기록의 함정)를
+  피하기 위함.
+- **변경 파일**: `k8s/rbac.yaml`(configmaps get 권한 추가), `k8s/deploy-history-configmap.yaml`(신규),
+  `Jenkinsfile`(Verify Deployment 성공/실패 분기에 이력 기록 로직 추가), `app.py`(`/api/deploy-history`
+  엔드포인트), `templates/cicd.html`(타임라인 UI). `LOCAL_MODE=true`로 로컬 실행해 엔드포인트/화면 정상
+  동작은 확인 완료, 실제 클러스터에 RBAC/ConfigMap을 반영하고 라이브 이벤트가 쌓이는 것 검증은 대기 중.
+
+### 4.27 CI/CD 탭 UX 정합성 수정 — 파이프라인 단계 패널 제거 + 롤백 캡션 모순 해결
+- **배경**: 사용자가 실제 화면 스크린샷을 보고 두 가지를 지적했다. (1) 배포 미션 결과의 큰 캡션이
+  롤백이 나도 계속 "완벽한 배포! S랭크!"로 떠서 모순됨. (2) "파이프라인 단계" 패널이 4.22절에서 이미
+  걷어낸 Jenkins 직접배포(push 모델) 순서를 그대로 보여주고 있어 실제 GitOps(ArgoCD Pull) 흐름과
+  안 맞음.
+- **1차 수정**: 파이프라인 단계 패널을 실제 흐름(Build&Push→Sign→Update Manifests→ArgoCD Sync→
+  Verify)에 맞게 다시 쓰고, 배포 히스토리(4.26절)의 최신 이벤트가 롤백인지 확인해 큰 결과 패널에
+  "🛡️ 배포 실패 감지 — 이전 안정 버전으로 자동 복구됨" 배너/캡션이 뜨도록 `applyRankCaption()` /
+  `latestDeployIsRollback` 로직을 추가했다.
+- **CI/CD 자동 트리거 버튼 검토(보류)**: 사용자가 "대시보드에 버튼 하나로 코드 변경 감지 → 자동
+  빌드/배포"가 가능한지 물어, 가능은 하다고 답하되 트레이드오프를 함께 설명했다 — 앱이 Jenkins Job을
+  트리거하려면 새 권한(Job trigger token)이 필요하고, 공인 IP로 열려있는 버튼이라 남용(무한 재배포
+  유발) 위험이 있다. 사용자가 트레이드오프를 듣고 진행하지 않기로 결정.
+- **2차 수정(파이프라인 패널 완전 제거)**: 위 논의에서 "파이프라인 단계는 굳이 대시보드에 필요없다"는
+  결론이 나와, 패널 자체를 통째로 제거했다(관련 CSS `.pipeline-steps`/`.pipeline-step`/`.pipeline-tag`도
+  삭제). GitOps 랭크 설명 한 줄만 결과 카드 아래로 옮겨 보존.
+- **실측 검증**: `/health`를 일부러 두 번(각 수정 직후) 깨서 실제 KR2에서 롤백을 유발, 배너/캡션이
+  올바르게 바뀌는 것과 `/health` 복구 후 다시 원래 캡션으로 돌아오는 것까지 라이브로 확인했다.
+- **변경 파일**: `templates/cicd.html`만 수정(백엔드/인프라 변경 없음).
+
+### 4.28 Jenkins 파드 CrashLoopBackOff 재발 — 4.16과 동일 원인, 동일 해결
+- **증상**: 다음날 아침 Jenkins 웹 콘솔 접속 불가. `kubectl describe pod jenkins-0 -n jenkins`로 확인해
+  보니 메인 `jenkins` 컨테이너가 아니라 **init 컨테이너**가 CrashLoopBackOff(재시작 8회) 상태였다.
+- **원인**: `kubectl logs jenkins-0 -n jenkins -c init --previous`로 확인 — 플러그인 복사 단계(`cp`)가
+  대화형 덮어쓰기 확인 프롬프트에 걸려 멈춰있었다. 같은 파드 안에 남아있던 `plugin-dir` emptyDir이
+  이전 재시도들의 잔여물로 오염된 것 — **4.16절에서 이미 겪었던 것과 완전히 동일한 실패 패턴**이었다.
+- **해결**: `kubectl delete pod jenkins-0 -n jenkins`. `jenkins-home`은 PVC라 job 이력/JCasC 설정/
+  크레덴셜은 전부 보존되고, 오염된 emptyDir만 새로 생성돼(StatefulSet이 파드를 재생성) 정상 기동했다.
+- **부수 정리**: 같은 시점에 사용자가 orphan 상태(`Unknown`, 18시간 경과)였던 별도 파드
+  (`chaos-demo-cicd-14-...`, `jenkins` 네임스페이스)도 직접 삭제했다 — 이건 build #14의 **일회성 빌드
+  에이전트 파드**로, `default` 네임스페이스의 실제 `chaos-demo` 앱 파드와는 무관한 자원이라 삭제해도
+  안전함을 확인해줬다.
+- **교훈**: 같은 실패 패턴이 재발할 수 있다는 걸 전제하고, PROJECT_LOG에 남긴 이전 사례를 먼저 찾아보는
+  게 새로 원인 분석하는 것보다 빨랐다.
+
+### 4.29 GitHub 웹훅 배포 실패 — Jenkins가 다운된 순간의 delivery는 자동 재시도되지 않음
+- **증상**: (4.28 복구 직후) UI 수정 커밋을 push했는데 한참이 지나도 `/api/status`의 빌드 번호가
+  바뀌지 않았다.
+- **원인 확인**: `gh api repos/wonju90/ChaosArena/hooks/{hook_id}/deliveries`로 최근 delivery 목록을
+  조회해보니, 해당 push의 delivery가 `502 failed to connect to host`(그 순간 Jenkins가 CrashLoop 중
+  이었기 때문)로 실패해 있었다. **GitHub는 실패한 웹훅 delivery를 자동으로 재시도하지 않는다**는 것도
+  이번에 확인했다.
+- **해결**: 실패한 delivery ID를 찾아 `gh api -X POST .../deliveries/{id}/attempts`로 수동 재전송했다.
+  새 `200 OK` delivery가 찍히는 것을 확인한 뒤, `/api/status`/`/api/deploy-history`를 폴링해 빌드가
+  정상적으로 넘어가고 성공 이력까지 기록되는 것을 확인했다. 세션 후반 또 다른 push에서 같은 증상이
+  한 번 더 나타나 동일한 방법으로 해결했다.
+- **왜 새 커밋을 만들지 않았나**: 코드는 이미 올바르게 push돼 있었고 문제는 순전히 "그 순간 알림이
+  전달 안 된 것"뿐이라, 빈 커밋이나 재push 대신 웹훅 재전송이 더 정확한 수정이었다.
+- **교훈**: "push했는데 배포가 안 됨"이 항상 코드/파이프라인 문제는 아니다 — 웹훅 delivery 로그를 먼저
+  확인하는 게 원인 파악에 더 빨랐다.
+
+### 4.30 대시보드 UI 일관성 개선 — 색상 규칙 / 빈 여백 / 그리드 통일
+- **배경**: 사용자가 4개 페이지 스크린샷을 보고 "중구난방해보인다"고 피드백. 헤드리스 Chrome
+  스크린샷으로 4개 페이지를 나란히 비교해 원인을 3가지 축으로 좁혔다.
+- **1) 색상 규칙**: `stat-tile`의 accent 5색(blue/green/orange/red/gold)이 이미 대부분 일관됐는데
+  (파랑=카운트/식별, 주황=시간, 빨강=경고, 금색=최고기록), `cicd.html`의 "커밋" 타일만 초록(=정상/성공
+  의미)을 쓰고 있어 유일한 예외였다. `stat-accent-green` → `stat-accent-blue`로 통일하고, 앞으로 새
+  지표를 추가할 때 참고하도록 `base.html`에 색상 규칙을 주석으로 남겼다.
+- **2) 빈 여백**: `game.html`(대기 화면)과 `cicd.html`은 하단에 공백이 컸는데, 새 API/DB 없이 이미
+  있는 `/api/records` · `/api/deploy-history`를 재사용해 서로를 요약해서 보여주는 크로스링크 패널을
+  추가했다(게임 콘솔엔 "최근 전적", CI/CD엔 "최근 장애 복구 기록", 기록실엔 "최근 배포 이력"). "파드
+  복구도 게임, 배포도 게임"이라는 이 프로젝트의 기존 테마도 자연스럽게 강화됐다.
+- **3) 그리드 구조**: `game.html`/`cicd.html`은 이미 `2:1` 비대칭 분할이었는데 `records.html`만 대칭
+  2분할이라 달랐다 → 위 크로스링크 패널을 사이드 칸에 배치하면서 자연스럽게 같은 `2:1` 구조로
+  재편했다. **`monitor.html`은 의도적으로 제외** — Chart.js 캔버스 2개가 이미 화면을 꽉 채우고 있어
+  억지로 구조를 맞추면 리사이즈 회귀 위험만 크고 얻는 게 적다고 판단했다(모니터링류 페이지가
+  전체너비 스택인 건 그 자체로 흔한 패턴).
+- **그 외**: 모든 페이지 공통 footer의 작은 태그라인 제거, `records.html`의 빈 상태(포디움/히스토리)
+  문구를 아이콘+CTA 버튼이 있는 통일된 empty-state 컴포넌트로 재작성.
+- **후속(모니터링 페이지 크로스링크)**: 위 3페이지 작업 뒤 `monitor.html`만 다른 페이지와의
+  크로스링크가 없다는 걸 재확인해, "파드 요약" 패널에 기록실 링크 한 줄을 추가했다(그리드 구조는
+  그대로 유지).
+- **검증**: 매 변경마다 로컬(`LOCAL_MODE=true`)에서 헤드리스 Chrome 스크린샷으로 레이아웃을 확인하고,
+  각 페이지의 기존 `id`가 그대로 남아있는지 grep으로 재확인해(기존 폴링 로직 회귀 방지) 커밋했다.
+  실제 커밋(`e4d3cc3`, `9130192`, `aa1e3df`) push 후 KR2에 배포되는 것까지 확인.
+- **변경 파일**: `templates/base.html`/`cicd.html`/`game.html`/`records.html`/`monitor.html`(전부
+  프론트엔드, 백엔드/인프라 변경 없음).
 
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
@@ -407,6 +600,9 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   (남은 "2 to add"는 KR1 RAM 쿼터 문제로 아래 항목이 해결되기 전까진 그대로 둘 것) (4.17절)
 - [ ] KR1(판교) RAM 쿼터 확보 → `r2.c4m16`·워커 3대로 정식 재구축 → `deployment-kr1-test.yaml` → `deployment.yaml`(APP_VERSION=kr1) 전환
 - [x] **DNS Plus GSLB failover 구성 + 검증 완료** ⭐ — Zone 생성 → 가비아 네임서버를 NHN으로 위임 → Pool(`kr1-active` 우선순위1/`kr2-standby` 우선순위2) + 헬스체크(`/health`) → GSLB(FAILOVER, TTL 30초) 생성 후 Pool 연결 → `www` CNAME을 GSLB 도메인으로 연결. `scripts/06`으로 KR1 파드를 강제로 내려 실제 failover(약 80초 소요, `kr1-test`→`kr2`)와 복구 후 failback을 둘 다 실측 검증 (4.15절)
+- [x] **GSLB 우선순위 재조정** — 풀 스펙 클러스터인 KR2를 우선순위 1(Active)로, 최소 스펙 테스트
+  클러스터인 KR1을 우선순위 2(Standby)로 변경. `dig +short www.chaosarena.cloud`가 KR2 공인IP를
+  가리키는 것으로 실제 전환 확인 (4.24절)
 - [x] **AlertManager 알림 규칙(파드 다운/CPU/에러율) + Slack 라우팅** — `PrometheusRule`(release 라벨 필요, 4.11 교훈 적용) + Alertmanager Slack 연동. 3단 실패(helm --reuse-values 함정 / Secret 네임스페이스 불일치 / null receiver 삭제로 인한 reconcile 전체 실패)를 로그 기반으로 하나씩 좁혀 해결 (4.12절). `ChaosDemoHighCPU` 알림이 실제로 파드명까지 템플릿 치환되어 Slack 도착 확인
 - [x] **Jenkins CI/CD** ⭐ — KR2 클러스터 내부(Pod)에 Helm으로 설치(hostPath PV로 영속화), `jenkins-deployer` RBAC,
   GitHub Webhook + Pipeline Job(`infra/k8s-setup` 브랜치), Jenkinsfile(Kaniko 빌드+push → cosign 서명 → kubectl
@@ -444,7 +640,23 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **ArgoCD(GitOps) 도입** ⭐ — Jenkins는 빌드+서명(CI)까지만, 배포(CD)는 별도 `ChaosArena-manifests`
   레포를 ArgoCD가 pull 방식으로 감시/반영. Jenkins의 클러스터 배포 권한(`jenkins-deployer`)을
   완전히 제거하고 Git 쓰기 권한만 갖게 함. 배포 랭크 기능(BUILD_NUMBER 등)도 GitOps 원칙에 맞게
-  Git 선언 상태로 전환 (4.22절)
+  Git 선언 상태로 전환 (4.22절). **Jenkins→Git→ArgoCD→클러스터 전체 파이프라인 end-to-end 실측
+  검증 완료**(build #17 SUCCESS, ArgoCD Synced/Healthy, 배포된 이미지 태그 일치 확인). 검증 중 겪은
+  에이전트 TCP 포트 바인딩 레이스 + K8s Service 고정 포트 불일치 트러블슈팅은 4.23절 참고
+- [x] **Jenkins 자동 롤백** ⭐ — 배포 후 `/api/status`의 `build_number`로 새 버전 반영을 확인하고, 약
+  2분 내에 안 바뀌면 이전 버전으로 되돌리는 커밋을 자동 push. 새 크레덴셜 없이 클러스터 내부 Service
+  DNS만으로 확인(4.25절). 실제로 헬스체크를 깨서 롤백 커밋이 push되고 빌드가 FAILURE로 표시되는 것까지
+  라이브 검증 완료 — 다만 "그 이전 버전 자체가 이미 나쁜 상태면 복구 안 됨"이라는 단일 단계 롤백의
+  한계도 함께 발견(4.25절 트러블슈팅)
+- [x] **CI/CD 탭 배포 히스토리 타임라인** — 배포 성공/롤백 이력을 ConfigMap에 기록해 화면에 최신순으로
+  보여줌(4.26절). 실제 KR2 클러스터에 RBAC/ConfigMap 반영 + `/health`를 일부러 깨는 라이브 롤백
+  테스트를 여러 차례 반복해 성공/롤백 이벤트가 정확히 기록·표시되는 것까지 검증 완료
+- [x] **CI/CD 탭 UX 정합성 수정** — 파이프라인 단계 패널이 실제 GitOps 흐름과 안 맞아 통째로 제거하고,
+  롤백 시에도 "완벽한 배포!" 캡션이 뜨던 모순을 수정(4.27절). 대시보드에 배포 트리거 버튼을 추가하는
+  안은 검토 후 보류(권한/남용 리스크)
+- [x] **대시보드 UI 일관성 개선** — footer 태그라인 제거, 색상 accent 규칙 통일, 페이지 간 크로스링크로
+  빈 여백 채우기, 유사한 페이지끼리 그리드 구조 통일(4.30절). Jenkins 파드 CrashLoopBackOff 재발(4.28절)
+  및 GitHub 웹훅 배포 실패(4.29절)도 이 기간에 겪고 해결
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

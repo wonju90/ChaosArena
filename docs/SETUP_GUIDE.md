@@ -19,6 +19,13 @@
 
 ## Part 0. 시작 전 준비물
 
+**먼저 알아둘 것 — 이 문서에서 반복해서 쓰는 도구 4가지, 한 줄 요약**
+- **Terraform**: "서버를 몇 대, 어떤 네트워크로 만들어라"를 코드로 선언하면 클라우드에 그대로 만들어주는 도구 (Part 1)
+- **kubeadm**: 그렇게 만든 서버 여러 대를 쿠버네티스 클러스터 하나로 묶어주는 공식 CLI (Part 2)
+- **Helm**: 쿠버네티스 위에 복잡한 소프트웨어(Jenkins, Prometheus 등)를 패키지 단위로 설치하는 도구 —
+  일반 리눅스의 `apt install`에 해당하는 쿠버네티스 버전 (Part 4, 6, 8)
+- **cosign**: 컨테이너 이미지에 디지털 서명을 붙여 "우리가 만든 진짜 이미지"임을 증명하는 도구 (Part 3.4)
+
 **계정/권한**
 - NHN Cloud 계정 + API 사용자 인증 정보(user_id/tenant_id/password) — 콘솔의
   `Compute > Instance > Management > API 엔드포인트 설정` 화면에서 확인. user_id는 로그인 이메일이 아니라
@@ -76,9 +83,33 @@ terraform apply      # 확인 후 yes 입력 — 실제로 서버 4대(마스터
 원인을 먼저 파악할 것 — 이 프로젝트도 실제로 이유를 모르고 적용했으면 운영 서버가 통째로 재설치될 뻔한
 사고가 있었다(`docs/PROJECT_LOG.md` 4.17절).
 
+`terraform plan`의 마지막 줄은 이렇게 생겼다. 처음 apply라면 `to change`/`to destroy`는 반드시 0이어야
+정상이다 — 0이 아니면 apply하지 말고 원인부터 확인할 것:
+```
+Plan: 8 to add, 0 to change, 0 to destroy.
+```
+`terraform apply`가 끝까지 성공하면 마지막 줄이 이렇게 뜬다:
+```
+Apply complete! Resources: 8 added, 0 changed, 0 destroyed.
+```
+
 ### ✅ 확인
 ```bash
 terraform output
+```
+예상 출력(값은 본인 환경마다 다름 — IP는 아래 형식의 실제 공인 IP로 채워진다):
+```
+kr1_master_public_ip = "133.186.xxx.xxx"
+kr2_master_public_ip = "133.186.yyy.yyy"
+kr1_worker_private_ips = [
+  "192.168.0.11",
+  "192.168.0.12",
+]
+kr2_worker_private_ips = [
+  "192.168.0.21",
+  "192.168.0.22",
+  "192.168.0.23",
+]
 ```
 `kr1_master_public_ip`, `kr2_master_public_ip` 등이 출력되면 성공. 이 IP들을 이후 단계에서 계속 쓴다.
 
@@ -122,11 +153,25 @@ ssh ubuntu@<마스터_공인IP>
 Pod 네트워크 CIDR을 `172.16.0.0/16`으로 지정하는데, 노드가 속한 서브넷(`192.168.0.0/24`)과 안 겹치게
 일부러 고른 값이다 — 겹치면 파드 IP와 노드 IP가 충돌한다.
 
+성공하면 스크립트 출력 맨 아래에 다음 조인 단계에서 그대로 쓸 `kubeadm join` 명령이 함께 찍힌다(토큰은
+24시간 후 만료되므로 나중에 실행할 땐 2.5절처럼 새로 발급받아도 된다):
+```
+Your Kubernetes control-plane has initialized successfully!
+...
+kubeadm join 192.168.0.10:6443 --token abcdef.0123456789abcdef \
+    --discovery-token-ca-cert-hash sha256:1234...cdef
+```
+
 ### 2.4 Calico(CNI) 설치 — 마스터에서, init 직후
 
 ```bash
 ./03-install-calico.sh
 kubectl get tigerastatus   # 모든 항목이 AVAILABLE=True 될 때까지 몇 분 대기
+```
+예상 출력(전부 `True`가 될 때까지 `-w`를 붙이거나 반복 실행):
+```
+NAME        AVAILABLE   PROGRESSING   DEGRADED   SINCE
+calico      True        False         False      2m14s
 ```
 
 **왜 CNI가 필요한가**: 쿠버네티스는 "파드 간 네트워크"를 스스로 제공하지 않고 CNI 플러그인에게 맡긴다.
@@ -150,13 +195,22 @@ kubeadm token create --print-join-command
 ssh ubuntu@<워커_사설IP>
 sudo kubeadm join <마스터_사설IP>:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>
 ```
-토큰은 24시간 후 만료되므로, 시간이 지났다면 위 발급 명령을 다시 실행해서 새 토큰을 받을 것.
+토큰은 24시간 후 만료되므로, 시간이 지났다면 위 발급 명령을 다시 실행해서 새 토큰을 받을 것. 성공하면
+워커 쪽에 `This node has joined the cluster:` 로 시작하는 메시지가 뜬다.
 
 ### ✅ 확인
 ```bash
 kubectl get nodes
 ```
-마스터 1대 + 워커 3대 전부 `Ready`면 성공.
+예상 출력 — 마스터 1대 + 워커 3대 전부 `STATUS`가 `Ready`면 성공(조인 직후엔 몇십 초간 `NotReady`일
+수 있으니 바로 안 되면 잠시 후 재확인):
+```
+NAME                       STATUS   ROLES           AGE   VERSION
+chaosarena-master-kr2      Ready    control-plane   5m    v1.30.x
+chaosarena-worker1-kr2     Ready    <none>          3m    v1.30.x
+chaosarena-worker2-kr2     Ready    <none>          3m    v1.30.x
+chaosarena-worker3-kr2     Ready    <none>          3m    v1.30.x
+```
 
 ### 2.6 (선택) MetalLB — 시도했지만 이 환경에선 안 됨, 참고만
 
@@ -172,6 +226,12 @@ NodePort를 실제 접속 경로로 쓰고 있다(Part 3.5, 8절 참고).
 ```bash
 ./07-install-metrics-server.sh
 kubectl top nodes   # 지표가 보이면 성공 (30초~1분 걸릴 수 있음)
+```
+예상 출력(수치는 실제 부하에 따라 다름 — 숫자가 `<unknown>`이 아니라 실제 값이면 성공):
+```
+NAME                      CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%
+chaosarena-master-kr2     120m         6%     1024Mi          26%
+chaosarena-worker1-kr2    45m          2%     512Mi           13%
 ```
 kubeadm 자체 구축 클러스터는 kubelet 인증서가 metrics-server가 기본으로 신뢰하는 CA로 서명돼있지 않은
 경우가 많아서, 스크립트가 `--kubelet-insecure-tls` 옵션을 자동으로 패치해준다.
@@ -189,6 +249,12 @@ kubeadm 자체 구축 클러스터는 kubelet 인증서가 metrics-server가 기
 이 앱(Flask)이 "Chaos 버튼"으로 파드를 조회/삭제하려면 쿠버네티스 API 권한이 필요하다.
 ```bash
 kubectl apply -f k8s/rbac.yaml
+```
+예상 출력(3종 세트가 한 번에 생성됨):
+```
+serviceaccount/chaos-dashboard-sa created
+role.rbac.authorization.k8s.io/pod-manager created
+rolebinding.rbac.authorization.k8s.io/chaos-dashboard-binding created
 ```
 `ServiceAccount`(신분증) + `Role`(get/list/delete pods 권한) + `RoleBinding`(둘을 묶음) 3종 세트.
 쿠버네티스는 기본적으로 모든 접근을 막기 때문에 "딱 필요한 권한만" 담은 신분증을 발급하는
@@ -253,7 +319,15 @@ URL을 채운 뒤 `kubectl apply -f k8s/secret-slack.yaml` — 없어도 앱은 
 kubectl get pods -l app=chaos-demo -o wide   # 3개 다른 노드에 하나씩 Running
 curl http://<마스터_공인IP>:30080/health      # {"status":"ok"}
 ```
-브라우저로 `http://<마스터_공인IP>:30080` 접속해서 게임 화면이 뜨는지도 확인.
+예상 출력:
+```
+NAME                          READY   STATUS    RESTARTS   AGE   NODE
+chaos-demo-6c8d9f7b5d-2kx9p   1/1     Running   0          40s   chaosarena-worker1-kr2
+chaos-demo-6c8d9f7b5d-7qz1m   1/1     Running   0          40s   chaosarena-worker2-kr2
+chaos-demo-6c8d9f7b5d-p8vwt   1/1     Running   0          40s   chaosarena-worker3-kr2
+```
+`NODE` 열이 3개 다 다르면(anti-affinity가 의도대로 동작) 정상이다. `curl`은 `{"status":"ok"}`가
+그대로 찍히면 성공. 브라우저로 `http://<마스터_공인IP>:30080` 접속해서 게임 화면이 뜨는지도 확인.
 
 ---
 
@@ -301,6 +375,14 @@ helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
 ```bash
 kubectl get pods -n monitoring
 ```
+예상 출력(일부 발췌 — Operator/Prometheus/Grafana/Alertmanager 등 여러 파드가 뜬다):
+```
+NAME                                                     READY   STATUS    RESTARTS   AGE
+kube-prometheus-stack-grafana-5f9b7c8d9-abc12            3/3     Running   0          2m
+kube-prometheus-stack-kube-prome-prometheus-0            2/2     Running   0          2m
+kube-prometheus-stack-kube-state-metrics-6d8f-xyz34      1/1     Running   0          2m
+alertmanager-kube-prometheus-stack-kube-prome-alertmanager-0   2/2   Running   0      2m
+```
 전부 Running이면 `http://<마스터_공인IP>:30030`(Grafana), `:30090`(Prometheus)으로 접속 확인.
 
 ---
@@ -312,6 +394,11 @@ kubectl get pods -n monitoring
 파드 하나 죽는 건 자가치유로 복구되지만 리전 전체가 죽으면 못 막는다. 그래서 KR1(판교)에도 Part 1~4를
 그대로 반복해서 두 번째 클러스터를 만든다. `deployment.yaml`의 `APP_VERSION`만 클러스터마다 다르게
 (`kr1-active` 등) 채운다.
+
+**GSLB란?**: Global Server Load Balancing — 여러 리전(여기선 KR1/KR2)에 떠있는 서버들을, DNS 응답
+단계에서 "지금 살아있는 쪽 IP만 알려주는" 방식으로 트래픽을 분산/전환하는 서비스다. 로드밸런서가 클러스터
+"안"에서 파드끼리 트래픽을 나눈다면, GSLB는 클러스터 "바깥"에서 리전 전체가 죽었을 때 다른 리전으로
+갈아타 준다는 점이 다르다.
 
 ### 5.2 Active/Standby로 정하고 GSLB 구성 — NHN 콘솔에서 직접
 
@@ -337,12 +424,27 @@ kubectl get pods -n monitoring
 ```bash
 kubectl scale deployment/chaos-demo --replicas=0   # Active 클러스터에서
 ```
-약 80초 내로 응답이 Standby로 바뀌는 `🔀 FAILOVER 감지` 로그가 뜨면 성공. 다시 `--replicas=3`으로
-되돌리면 자동으로 failback되는 것까지 확인.
+약 80초 내로 응답이 Standby로 바뀌는 `🔀 FAILOVER 감지` 로그가 뜨면 성공. 예상 출력 형태:
+```
+[12:03:41] OK  · kr1-active 응답 (APP_VERSION=kr1-active)
+[12:03:44] OK  · kr1-active 응답 (APP_VERSION=kr1-active)
+[12:04:58] 🔀 FAILOVER 감지 · kr2-standby 응답으로 전환됨 (APP_VERSION=kr2)
+[12:05:01] OK  · kr2-standby 응답 (APP_VERSION=kr2)
+```
+다시 `--replicas=3`으로 되돌리면 자동으로 failback되는 것까지 확인.
 
 ---
 
 ## Part 6. Jenkins CI/CD — push 한 번으로 빌드→서명→배포 자동화
+
+**Webhook이란?**: GitHub가 "방금 이 저장소에 push가 있었다"는 이벤트를, 사람이 Jenkins 화면을 열어
+확인하러 갈 필요 없이 Jenkins 서버로 즉시 HTTP 요청을 보내 알려주는 기능이다. Webhook이 없으면 Jenkins가
+주기적으로 GitHub를 스스로 폴링해야 해서, push 후 빌드가 시작되기까지 지연이 생긴다.
+
+**PV/PVC란?**: 파드는 재시작되면 그 안의 파일이 전부 사라진다. PersistentVolume(PV)은 "재시작해도
+안 사라지는 저장 공간"을 클러스터에 등록해두는 리소스이고, PersistentVolumeClaim(PVC)은 파드가 그
+저장 공간을 "이만큼 달라"고 요청하는 쪽이다. Jenkins는 job 이력/설정을 계속 유지해야 하므로 이 저장
+공간이 필수다.
 
 ### 6.1 사전 준비 — 시크릿/PV/RBAC
 
@@ -397,6 +499,17 @@ kubectl -n jenkins get secret jenkins -o jsonpath='{.data.jenkins-admin-password
 ### ✅ 확인
 더미 커밋을 push하고 Jenkins에서 빌드가 자동으로 트리거되어 SUCCESS로 끝나는지, 앱이 새 이미지로
 바뀌었는지(`/api/status`의 `build_number`) 확인.
+```bash
+curl http://<마스터_공인IP>:30080/api/status | python3 -m json.tool
+```
+예상 출력(일부 발췌 — `build_number`가 방금 push한 빌드 번호와 같으면 성공):
+```json
+{
+  "build_number": "12",
+  "git_commit": "a1b2c3d",
+  "total_requests": 42
+}
+```
 
 ---
 
@@ -427,7 +540,16 @@ kubectl get hpa chaos-demo -w
 
 ### ✅ 확인
 앱 화면의 "🔥 CPU 부하" 버튼을 켜고 지켜보면 `REPLICAS`가 3 → 6으로 늘고(`kubectl get pods -o wide`로
-노드당 2개씩 분산 확인), 버튼을 끄면 5분(기본 안정화 창) 뒤 3으로 줄어든다.
+노드당 2개씩 분산 확인), 버튼을 끄면 5분(기본 안정화 창) 뒤 3으로 줄어든다. `kubectl get hpa chaos-demo -w`
+예상 출력(부하 시작 → 스케일 아웃 → 부하 종료 → 5분 뒤 스케일 다운 순서):
+```
+NAME         REFERENCE               TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+chaos-demo   Deployment/chaos-demo   12%/50%   3         6         3          10m
+chaos-demo   Deployment/chaos-demo   88%/50%   3         6         3          10m30s
+chaos-demo   Deployment/chaos-demo   61%/50%   3         6         6          11m
+chaos-demo   Deployment/chaos-demo   9%/50%    3         6         6          16m
+chaos-demo   Deployment/chaos-demo   9%/50%    3         6         3          21m
+```
 
 ---
 
@@ -471,11 +593,12 @@ kubectl apply -f k8s/chaos-demo-ingress.yaml
 
 ### ✅ 확인
 ```bash
-curl http://<마스터_공인IP>/api/status          # 포트 없이!
-curl http://<마스터_공인IP>:30080/api/status    # 기존 경로도 여전히 살아있는지(회귀 확인)
-curl http://www.<본인도메인>/api/status          # 실제 도메인도 포트 없이
+curl -s -o /dev/null -w "%{http_code}\n" http://<마스터_공인IP>/api/status          # 포트 없이!
+curl -s -o /dev/null -w "%{http_code}\n" http://<마스터_공인IP>:30080/api/status    # 기존 경로도 여전히 살아있는지(회귀 확인)
+curl -s -o /dev/null -w "%{http_code}\n" http://www.<본인도메인>/api/status          # 실제 도메인도 포트 없이
 ```
-전부 200이면 성공. KR1(GSLB Active 쪽)에도 반드시 같은 작업을 반복해야 실제 도메인으로 확인 가능하다.
+세 줄 다 `200`이 찍히면 성공. KR1(GSLB Active 쪽)에도 반드시 같은 작업을 반복해야 실제 도메인으로
+확인 가능하다.
 
 ---
 
@@ -584,13 +707,23 @@ Webhooks → Payload URL `https://<마스터_공인IP>:30443/api/webhook`, Conte
 ### ✅ 확인
 
 더미 커밋을 push하고:
-```bash
-# 1) Jenkins 빌드가 SUCCESS로 끝나는지, ChaosArena-manifests 레포에 새 커밋이 생겼는지 확인
-# 2) ArgoCD Application 상태 확인
-kubectl -n argocd get application chaos-demo
-# STATUS: Synced, HEALTH: Healthy 면 성공
 
-# 3) 실제 클러스터에 반영됐는지
+**1) Jenkins 빌드가 SUCCESS로 끝나는지, `ChaosArena-manifests` 레포에 새 커밋이 생겼는지 확인**
+
+**2) ArgoCD Application 상태 확인**
+```bash
+kubectl -n argocd get application chaos-demo
+```
+예상 출력:
+```
+NAME         SYNC STATUS   HEALTH STATUS
+chaos-demo   Synced        Healthy
+```
+`SYNC STATUS`가 `Synced`, `HEALTH STATUS`가 `Healthy`면 성공. `OutOfSync`면 아직 ArgoCD가 Git 변경을
+못 봤거나(웹훅 미등록 시 최대 3분 폴링 대기) 반영 중인 것이니 잠시 후 재확인.
+
+**3) 실제 클러스터에 반영됐는지**
+```bash
 kubectl get deployment chaos-demo -o jsonpath='{.spec.template.spec.containers[0].image}'
 # 방금 ChaosArena-manifests에 커밋된 이미지 태그와 일치해야 함
 ```
@@ -598,6 +731,194 @@ kubectl get deployment chaos-demo -o jsonpath='{.spec.template.spec.containers[0
 빌드+서명+매니페스트 커밋까지 끝낸 시간"을 의미한다(실제 클러스터 반영은 ArgoCD가 그 뒤에 한다).
 
 기존 접속 경로(`:30080`, 포트 없는 80, `www.<본인도메인>`)도 전부 회귀 없이 그대로 동작하는지 확인.
+
+### 9.7 자동 롤백 (참고) — 새 설치 없이 Jenkinsfile만으로 동작
+
+Jenkinsfile에 `Verify Deployment` 스테이지가 이미 추가돼 있다(코드 반영 완료, 새로 설치할 인프라
+없음). 배포 후 앱의 `/api/status`(클러스터 내부 Service DNS로 직접 호출)에서 `build_number`가 방금
+push한 빌드 번호로 바뀌는지 약 2분간 확인하고, 안 바뀌면 자동으로 이전 버전으로 되돌리는 커밋을
+push한다. 자세한 설계 이유는 `docs/CONCEPTS.md` 17절 참고.
+
+**직접 확인해보는 법** — 일부러 헬스체크가 실패하는 변경을 하나 만들어서 push해보면 된다:
+```bash
+# 예: app.py의 /health 핸들러를 잠깐 500을 반환하도록 바꿔서 커밋+push
+git commit --allow-empty -m "test: 자동 롤백 검증용 (실제로는 /health를 깨는 변경)"
+```
+Jenkins 빌드는 `Update Manifests Repo`까지 SUCCESS로 진행되지만(이미지 빌드 자체는 문제없으니까),
+`Verify Deployment`에서 새 `build_number`가 안 나타나 타임아웃되고, `ChaosArena-manifests`에
+`ROLLBACK: ...` 커밋이 자동으로 생기는지, ArgoCD가 그걸 감지해 이전 이미지로 되돌리는지, Jenkins
+빌드가 최종적으로 FAILURE(빨간 배지)로 끝나는지 확인한다. 확인 후엔 `/health`를 원래대로 되돌리는
+커밋을 잊지 말고 push할 것.
+
+### 9.8 CI/CD 탭 배포 히스토리 — 최초 1회 ConfigMap 부트스트랩
+
+9.7절의 자동 롤백은 실제로 잘 동작하지만, 롤백이 일어나도 CI/CD 탭 화면에는 그 흔적이 안 남는다 —
+그냥 빌드 번호가 하나 줄어든 정상 배포처럼 보인다. 그래서 배포 성공/롤백 이력을 최신순으로 보여주는
+**타임라인**을 CI/CD 탭에 추가했다(설계 이유는 `docs/CONCEPTS.md` 18절 참고). 코드
+(`k8s/rbac.yaml`, `k8s/deploy-history-configmap.yaml`, `Jenkinsfile`, `app.py`, `templates/cicd.html`)는
+이미 이 레포에 반영돼 있지만, **딱 하나 최초 1회 수동 단계가 필요하다.**
+
+**왜 수동 단계가 필요한가**: Jenkins는 이력을 기록할 때 `deploy-history-configmap.yaml` 파일의 *내용만*
+`yq`로 고친다 — 파일 자체가 `ChaosArena-manifests` 레포에 없으면 `yq`가 그냥 에러를 내고 멈춘다(9.2절의
+`deployment.yaml`처럼, "레포에 이미 있는 파일을 고치는" 전제로 설계했기 때문). 그래서 이 파일을
+Jenkins가 처음 건드리기 전에, 사람이 딱 한 번 레포에 심어둬야 한다. 마침 이번에 `k8s/rbac.yaml`에도
+"이 앱이 ConfigMap을 읽을 수 있다"는 권한 한 줄이 추가됐으니, 두 파일을 같이 반영한다.
+
+**1) 두 파일을 매니페스트 레포로 복사 + push** — 9.2절에서 로컬에 만들어뒀던 클론 폴더(예:
+`/tmp/ChaosArena-manifests`)가 있으면 그 위치로 `cd`하면 되고, 없으면(며칠 지나 `/tmp`가 정리됐거나
+다른 컴퓨터라면) 아래처럼 GitHub에서 새로 clone하면 된다 — 9.3절에서 이미 push해뒀으니 레포 자체는
+GitHub에 그대로 남아있다:
+```bash
+# 기존 클론이 남아있으면: cd /tmp/ChaosArena-manifests 로 이동해서 아래 cp부터 이어서 진행
+# 없으면(디렉토리가 안 보이면) 아래처럼 새로 clone
+git clone https://github.com/wonju90/ChaosArena-manifests.git /tmp/ChaosArena-manifests
+cd /tmp/ChaosArena-manifests
+
+# 이 레포(ChaosArena) 쪽의 최신 파일을 그대로 복사해온다
+cp /Users/wonju/workspaces/ChaosArena/k8s/rbac.yaml argocd-managed/rbac.yaml
+cp /Users/wonju/workspaces/ChaosArena/k8s/deploy-history-configmap.yaml argocd-managed/deploy-history-configmap.yaml
+
+git add argocd-managed/rbac.yaml argocd-managed/deploy-history-configmap.yaml
+git commit -m "Add deploy-history ConfigMap + RBAC read permission"
+git push
+```
+9.5절에서 켜둔 `syncPolicy.automated`(selfHeal) 덕분에, push하고 나면 ArgoCD가 알아서(웹훅을 등록해
+뒀다면 거의 즉시, 아니면 최대 3분 내) 이 두 리소스를 클러스터에 반영한다 — 여기서 따로 `kubectl apply`할
+필요는 없다.
+
+**2) ArgoCD가 실제로 반영했는지 확인**
+```bash
+kubectl get configmap chaos-deploy-history -n default -o yaml
+# data.history.jsonl 키가 보이면 ConfigMap 자체는 반영된 것 (아직 내용은 비어있는 게 정상)
+
+kubectl get role pod-manager -n default -o yaml
+# rules 목록에 resources: [configmaps] 항목이 추가돼 있는지 확인
+```
+
+**3) 권한이 실제로 통하는지 확인** — RBAC는 반영됐다고 항상 바로 통하는 게 아니라서, 앱이 쓰는
+ServiceAccount 입장에서 직접 확인하는 게 제일 확실하다:
+```bash
+kubectl auth can-i get configmaps/chaos-deploy-history \
+  --as=system:serviceaccount:default:chaos-dashboard-sa -n default
+# yes 가 나와야 정상. no가 나오면 위 1)~2)가 아직 안 끝난 것이니 잠시 뒤 재확인
+```
+
+**4) 정상 배포로 성공(✅) 이벤트 확인**
+```bash
+git commit --allow-empty -m "test: 배포 히스토리 타임라인 확인용"
+git push
+```
+Jenkins 빌드가 SUCCESS로 끝나면(`Verify Deployment`까지 정상 통과), `/cicd` 탭의 "배포 히스토리"
+패널에 `✅ 빌드 #N 성공` 항목이 최신순 맨 위에 새로 뜨는지 확인한다.
+
+**5) (선택) 롤백(🔁) 이벤트까지 확인** — 9.7절의 롤백 테스트를 다시 한 번 해보면, 이번엔 화면에
+`🔁 빌드 #N 롤백` + `⚠️ 헬스체크 실패 → #M로 자동 복구` 문구가 같이 남는 것까지 확인할 수 있다. 확인
+후엔 9.7절과 마찬가지로 `/health`를 원래대로 되돌리는 커밋을 잊지 말고 push할 것.
+
+---
+
+## Part 10. Redis — 기록실(리더보드)이 배포/재시작에도 살아남게
+
+### 10.1 왜 필요한가
+
+기록실(총 발생 횟수/평균 복구시간/하이스코어)은 지금까지 `app.py`의 파이썬 딕셔너리(`records`)에만
+저장돼 있었다. 이건 그 요청을 처리한 **파드 프로세스의 메모리**일 뿐이라, (1) `chaos-demo` 파드가
+재시작될 때마다(수동 삭제뿐 아니라 Jenkins→ArgoCD의 **모든 자동 배포**가 포함된다) 초기화되고,
+(2) replica 3대가 서로 메모리를 공유하지 않아 어느 파드가 응답하냐에 따라 값이 달라진다. 실제로
+문서만 고친 커밋 하나가 배포를 트리거해 리더보드가 통째로 0이 되는 걸 실측으로 확인했다(자세한
+배경은 `docs/CONCEPTS.md` 20절). Redis를 붙여서 이 데이터만 파드 바깥의 진짜 저장소로 옮긴다.
+
+**Redis란?**: 디스크가 아니라 메모리에 데이터를 두는 key-value 저장소다. "카운터 1 증가"(`INCR`)나
+"정렬된 상위 N개 유지"(`ZADD`/`ZRANGE`) 같은 연산이 원자적으로(여러 곳에서 동시에 건드려도 안전하게)
+바로 지원돼서, 이번처럼 "몇 개의 카운터 + 상위 3개 목록"류 데이터에 정확히 맞는다.
+
+### 10.2 사전 준비 — hostPath 디렉터리 (Jenkins와 다른 워커 노드에)
+
+Jenkins가 이미 `chaosarena-worker1-kr2`의 로컬 디스크를 쓰고 있으므로(Part 6.1), Redis는 **다른**
+워커 노드에 둬서 한 노드 장애로 둘 다 죽는 걸 피한다. 실제 노드 이름을 먼저 확인한다:
+```bash
+kubectl get nodes
+```
+`k8s/redis-pv.yaml`의 `nodeAffinity`가 가리키는 노드(기본값 `chaosarena-worker2-kr2`)가 실제
+존재하는 이름과 다르면 파일을 열어서 맞게 고친다. 그 노드에 SSH로 접속해 디렉터리를 준비한다
+(Jenkins 때와 동일한 패턴, `k8s/jenkins-pv.yaml` 상단 주석 참고):
+```bash
+ssh -J ubuntu@<마스터_공인IP> ubuntu@<해당_워커_사설IP>
+sudo mkdir -p /data/redis
+sudo chown 999:999 /data/redis   # redis:7-alpine 컨테이너의 기본 실행 UID/GID
+```
+
+### 10.3 비밀번호 Secret 준비
+
+```bash
+cp k8s/redis-secret.example.yaml k8s/redis-secret.yaml
+```
+`k8s/redis-secret.yaml`을 열어 `password` 값을 실제 랜덤 문자열로 교체(예:
+`openssl rand -base64 24`) — `redis-secret.yaml`은 `.gitignore`에 등록돼 있어 실수로 커밋되지 않는다.
+
+### 10.4 Redis 적용
+
+```bash
+kubectl apply -f k8s/redis-secret.yaml
+kubectl apply -f k8s/redis-pv.yaml
+kubectl apply -f k8s/redis.yaml
+```
+
+### ✅ 확인 — Redis 자체가 정상인지 (앱을 붙이기 전에 먼저)
+```bash
+kubectl get pods -l app=redis
+```
+예상 출력(`READY 1/1`, `STATUS Running`이면 성공):
+```
+NAME      READY   STATUS    RESTARTS   AGE
+redis-0   1/1     Running   0          40s
+```
+직접 접속해서 명령을 날려본다(비밀번호는 10.3에서 넣은 값):
+```bash
+kubectl exec -it redis-0 -- redis-cli -a <redis-secret.yaml의 password> ping
+# 출력: PONG
+```
+
+**핵심 확인 — 재시작해도 데이터가 진짜 남는지(이번 작업의 목적 그 자체)**:
+```bash
+kubectl exec -it redis-0 -- redis-cli -a <password> set smoke-test hello
+kubectl delete pod redis-0          # StatefulSet이 곧바로 재생성한다
+kubectl wait --for=condition=Ready pod/redis-0 --timeout=60s
+kubectl exec -it redis-0 -- redis-cli -a <password> get smoke-test
+# 출력: hello  ← 파드가 새로 떴는데도 값이 남아있으면 PV/RDB가 제대로 동작하는 것
+```
+
+### 10.5 앱 코드 반영
+
+`k8s/deployment.yaml`에 이미 `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD` env가 추가돼 있고(이 레포
+쪽), `app.py`도 Redis가 있으면 자동으로 쓰고 없으면 파드 메모리로 저하하게 이미 구현돼 있다. Part 9의
+GitOps 흐름을 그대로 따른다 — 이 레포에서 코드를 고치는 게 아니라, **9.6절 방식대로 이미지가 새로
+빌드되게 그냥 평소처럼 push**하면 된다(Jenkins가 빌드→서명 후 `ChaosArena-manifests`에 새 이미지
+태그를 커밋 → ArgoCD가 반영). 최초 1회만, `redis-secret`을 앱이 읽을 수 있게 `k8s/deployment.yaml`도
+`ChaosArena-manifests/argocd-managed/`에 최신 버전으로 반영돼 있는지 확인한다(9.2절처럼 이미
+그 폴더에 있는 파일이므로, 이 레포의 최신 `k8s/deployment.yaml`을 복사해 커밋+push).
+
+### ✅ 확인 — 실제로 Redis를 쓰고 있는지
+
+```bash
+kubectl exec -it redis-0 -- redis-cli -a <password> keys "records:*"
+```
+게임 콘솔에서 미션을 하나 완료한 뒤 다시 실행하면, 예상 출력처럼 키가 보여야 한다:
+```
+1) "records:incidents"
+2) "records:recovery_sum"
+3) "records:leaderboard"
+4) "records:leaderboard:seq"
+5) "records:recent_history"
+6) "records:current_combo"
+```
+(`records:best_combo`는 S랭크가 한 번 이상 나와야 생긴다.) 하나도 안 보이면 앱이 아직 Redis
+미설정 상태(`REDIS_HOST` 미반영, `redis-secret` 없음 등)로 파드 메모리에 저하 중인 것이니 배포
+상태와 Secret부터 확인.
+
+**이번 문제를 발견했던 시나리오를 그대로 재현해서 확인**: 아무 커밋이나(문서 수정도 됨) push해서
+Jenkins→ArgoCD 자동 재배포를 한 번 유발한다. 재배포 완료 후 `/records` 페이지를 새로고침해서
+리더보드가 **이번엔 0으로 리셋되지 않는지** 확인한다 — 이게 이번 Part 전체의 성공 기준이다.
 
 ---
 

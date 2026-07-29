@@ -840,10 +840,11 @@ Jenkins가 이미 `chaosarena-worker1-kr2`의 로컬 디스크를 쓰고 있으�
 kubectl get nodes
 ```
 `k8s/redis-pv.yaml`의 `nodeAffinity`가 가리키는 노드(기본값 `chaosarena-worker2-kr2`)가 실제
-존재하는 이름과 다르면 파일을 열어서 맞게 고친다. 그 노드에 SSH로 접속해 디렉터리를 준비한다
-(Jenkins 때와 동일한 패턴, `k8s/jenkins-pv.yaml` 상단 주석 참고):
+존재하는 이름과 다르면 파일을 열어서 맞게 고친다. **(Jenkins 때 `chaosarena-worker1-kr2`에 했던 것과
+"디렉터리 만들고 소유권 맞추기"라는 방식만 같을 뿐, 이번엔 워커1이 아니라 방금 정한 워커2 노드에
+접속해야 한다 — 헷갈리지 않게 주의)** 그 노드에 SSH로 접속해 디렉터리를 준비한다:
 ```bash
-ssh -J ubuntu@<마스터_공인IP> ubuntu@<해당_워커_사설IP>
+ssh -J ubuntu@<마스터_공인IP> ubuntu@<해당_워커2_사설IP>
 sudo mkdir -p /data/redis
 sudo chown 999:999 /data/redis   # redis:7-alpine 컨테이너의 기본 실행 UID/GID
 ```
@@ -890,13 +891,18 @@ kubectl exec -it redis-0 -- redis-cli -a <password> get smoke-test
 
 ### 10.5 앱 코드 반영
 
-`k8s/deployment.yaml`에 이미 `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD` env가 추가돼 있고(이 레포
-쪽), `app.py`도 Redis가 있으면 자동으로 쓰고 없으면 파드 메모리로 저하하게 이미 구현돼 있다. Part 9의
-GitOps 흐름을 그대로 따른다 — 이 레포에서 코드를 고치는 게 아니라, **9.6절 방식대로 이미지가 새로
-빌드되게 그냥 평소처럼 push**하면 된다(Jenkins가 빌드→서명 후 `ChaosArena-manifests`에 새 이미지
-태그를 커밋 → ArgoCD가 반영). 최초 1회만, `redis-secret`을 앱이 읽을 수 있게 `k8s/deployment.yaml`도
-`ChaosArena-manifests/argocd-managed/`에 최신 버전으로 반영돼 있는지 확인한다(9.2절처럼 이미
-그 폴더에 있는 파일이므로, 이 레포의 최신 `k8s/deployment.yaml`을 복사해 커밋+push).
+`app.py`는 Redis가 있으면 자동으로 쓰고 없으면 파드 메모리로 저하하게 이미 구현돼 있고, 이 코드는
+평소 push 흐름(9.6절)을 통해 이미 KR2에 배포돼 있다. 남은 건 딱 하나 — 실제로 클러스터를 움직이는
+`ChaosArena-manifests/argocd-managed/deployment.yaml`(이 레포의 `k8s/deployment.yaml`이 아니다,
+Part 9 GitOps 구조)에는 아직 `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD` env가 없다는 것이다.
+
+**⚠️ 주의: 이 파일을 이 레포의 `k8s/deployment.yaml`로 통째로 덮어쓰지 말 것.** 이 레포 쪽 파일엔
+과거 이미지 태그가 그대로 박혀 있고, `ChaosArena-manifests` 쪽 파일은 Jenkins가 매 배포마다 최신
+이미지 태그/`BUILD_NUMBER`/`GIT_COMMIT`/`DEPLOY_DURATION_SECONDS`로 갱신해온 것이다. 통째로
+덮어쓰면 지금 떠있는 최신 빌드가 옛날 이미지로 롤백돼 버린다. 대신 `SLACK_WEBHOOK_URL` env 아래에
+`REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD` **3줄만** 손으로 추가하고(내용은 이 레포의
+`k8s/deployment.yaml`에서 그대로 옮겨오되, 그 3줄만), 나머지 필드는 그대로 둔 채 커밋+push한다
+(9.8절과 같은 "파일 일부만 최초 1회 수동 반영" 패턴).
 
 ### ✅ 확인 — 실제로 Redis를 쓰고 있는지
 

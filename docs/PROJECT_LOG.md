@@ -602,6 +602,21 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   `total_requests`/`avg_response_ms`는 이번에도 0으로 리셋됐는데, 이는 의도적으로 Redis로 안 옮긴
   `metrics_state`이므로 예상된 동작이다.)
 
+### 4.32 대시보드에 오토스케일링(HPA) 패널 추가
+
+- **배경**: HPA(4.18절)가 실제로 3→6으로 스케일 아웃하는 건 파드 개수로 화면에서 확인할 수 있었지만,
+  "왜(CPU 몇 %인지)"는 `kubectl get hpa`로만 볼 수 있었다. 사용자가 "대시보드에서 육안으로 확인할 수
+  있는 기능이 있냐"고 물어서, 없다는 것과 트레이드오프를 설명한 뒤 추가 요청을 받아 구현.
+- **구현**: `k8s/rbac.yaml`에 `autoscaling/horizontalpodautoscalers` 리소스 하나(`chaos-demo`)만
+  `get` 권한 추가(배포 이력 ConfigMap과 동일한 최소 권한 패턴). `app.py`에 `AutoscalingV2Api` 클라이언트
+  + `/api/hpa` 엔드포인트 추가 — `PROMETHEUS_URL`과 같은 "선택적 연동 + 우아한 저하"(HPA 미설치
+  클러스터는 `available:false`) 패턴 재사용. `LOCAL_MODE`에서는 이미 있는 `chaos_state["cpu_load"]`
+  토글로 스케일 아웃을 흉내내는 목업 사용. `templates/monitor.html`에 현재/목표 레플리카, min/max,
+  CPU 사용률 바(목표 초과 시 주황색)를 보여주는 새 패널 추가, 5초 폴링.
+- **로컬 검증**: `LOCAL_MODE=true`로 CPU 부하 버튼 on/off 각각에 대해 `/api/hpa` 응답과 화면 렌더링
+  (막대 색상 전환 포함) 스크린샷으로 확인 완료.
+- **변경 파일**: `app.py`, `k8s/rbac.yaml`, `templates/monitor.html`.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -698,6 +713,8 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   지워지고 replica 3개끼리 값이 다르던 문제를 실제 화면에서 목격 → Redis(hostPath PV, Jenkins와
   다른 워커 노드) 도입으로 해결. 로컬 5가지 시나리오 + KR2 실제 클러스터(파드 삭제 후 데이터 보존,
   실제 CI/CD 재배포 후 리더보드 유지)까지 전부 실측 검증 완료(4.31절)
+- [x] **대시보드 오토스케일링(HPA) 패널** — 최소 권한(HPA 1개 `get`)으로 현재/목표 레플리카, min/max,
+  CPU 사용률을 `/monitor`에서 kubectl 없이 육안 확인 가능(4.32절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

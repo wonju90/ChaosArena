@@ -660,6 +660,29 @@ HPA의 `minReplicas`를 지금 replicas 수와 똑같이 3으로 맞춰서, **HP
 뜨는 걸 허용하도록 고쳤고, 실제로 CPU 부하 버튼 하나로 3 → 6 스케일 아웃, 부하 해제 후 5분 뒤 3으로
 스케일 다운되는 것까지 실측 검증했습니다."
 
+### 14.8 대시보드에 "오토스케일링(HPA)" 패널 추가 — kubectl 없이도 육안 확인
+
+지금까지는 스케일 아웃이 실제로 일어났는지 `kubectl get hpa -w`로만 확인할 수 있었다. 대시보드(`/monitor`)
+자체는 파드 개수/Ready 상태만 보여줄 뿐, **HPA 오브젝트가 판단한 현재 CPU 사용률·목표치·min/max**는
+안 보였다 — 이 갭을 메우려고 패널을 추가했다.
+
+- **새 권한 없이는 안 됨**: HPA는 쿠버네티스 API 리소스(`autoscaling/v2`)라, 앱이 읽으려면 RBAC 권한이
+  하나 더 필요하다. 배포 이력 ConfigMap 때와 같은 최소 권한 패턴 — `resourceNames: ["chaos-demo"]`로
+  이 HPA 하나만 `get` 가능하게 제한했다(`k8s/rbac.yaml`).
+- **읽는 값**: `status.currentReplicas`/`desiredReplicas`, `spec.minReplicas`/`maxReplicas`, 그리고
+  `status.currentMetrics`/`spec.metrics`에서 `type: Resource, name: cpu`인 항목의 현재/목표
+  `averageUtilization`(퍼센트) — 딱 `kubectl get hpa`가 보여주는 것과 같은 값이다.
+- **HPA가 없는 클러스터는 우아하게 저하**: KR1처럼 HPA를 아직 안 붙인 클러스터에서는 이 조회가
+  404로 실패하는데, Prometheus 미연동 때와 똑같이 `available: false`로 처리해서 "HPA 미설치" 배지만
+  뜨고 앱은 안 죽는다.
+- **로컬에서도 확인 가능**: `LOCAL_MODE`에서는 실제 metrics-server가 없으니, 이미 있는
+  `chaos_state["cpu_load"]`(CPU 부하 버튼 on/off) 값을 보고 스케일 아웃된 것처럼 흉내낸 값을
+  내려준다 — 새 목업 인프라를 따로 안 만들고 기존 토글을 재사용했다.
+
+🎤 **발표 한 줄**: "파드 개수가 늘어나는 건 이미 화면에서 보였지만, '왜' 늘어났는지(CPU 몇 %인지)는
+터미널에서만 볼 수 있었어요. HPA API에 최소 권한으로 딱 하나만 읽기 권한을 추가해서, 그 이유까지
+같은 대시보드에서 보이게 했습니다."
+
 ---
 
 ## 15. Ingress — 포트 번호 없이, 규칙 기반으로 접속하기 (1단계: 병렬 추가)

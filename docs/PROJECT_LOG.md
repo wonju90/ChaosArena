@@ -565,6 +565,43 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **변경 파일**: `templates/base.html`/`cicd.html`/`game.html`/`records.html`/`monitor.html`(전부
   프론트엔드, 백엔드/인프라 변경 없음).
 
+### 4.31 기록실(리더보드) Redis 도입 — 실제 라이브 검증 완료
+- **배경**: 4.30절 UI 작업 도중, 사용자가 실제 화면에서 "빌드 #38 배포 직후 기록실이 0으로 리셋"되는
+  걸 직접 목격했다. 원인은 `records` dict(`app.py:107`)가 그 요청을 처리한 파드 프로세스의 메모리에만
+  있어서 — (1) CI/CD 자동 배포(코드와 무관한 문서 커밋 포함)가 파드를 롤링 교체할 때마다 초기화되고,
+  (2) replica 3개끼리 메모리를 공유하지 않아 sticky session 없이는 서로 다른 값을 보여준다는 것.
+- **결정**: Redis 도입. Postgres/SQLite 대신 Redis를 택한 이유, Helm 차트 대신 직접 작성한
+  StatefulSet+hostPath PV(Jenkins와 다른 워커 노드)를 택한 이유, `ZADD ... GT CH`로 동시성 레이스를
+  없앤 방법 등 설계 근거는 `docs/CONCEPTS.md` 20절 참고. `current_mission`/`chaos_state`/
+  `metrics_state`는 의도적으로 손대지 않음(스코프를 명확히 좁힘).
+- **구현**: `app.py`에 `get_redis_client()`(REDIS_HOST 비어있으면 None → in-memory로 저하) +
+  `_record_completion()`/`_fetch_records_snapshot()` 추가, `_complete_mission()`/`api_records()`/
+  `api_records_reset()`은 이 두 헬퍼만 호출하도록 재작성. `PROMETHEUS_URL`/`SLACK_WEBHOOK_URL`과
+  동일한 "선택적 외부 의존성 + 좁은 try/except + 로그 후 계속" 패턴을 그대로 따름. 새 파일
+  `k8s/redis-pv.yaml`/`k8s/redis.yaml`/`k8s/redis-secret.example.yaml`, `k8s/deployment.yaml`에
+  `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD` env 추가, `requirements.txt`에 `redis==5.0.8`.
+- **로컬 검증**: Homebrew `redis-server`를 띄워 (1) 미션 완료 → Redis에 정상 기록, (2) 앱 프로세스를
+  죽였다 재시작해도 기록 유지(재배포 시뮬레이션), (3) Redis를 꺼둔 상태에서도 앱이 500 없이 파드
+  메모리로 저하하며 미션도 정상 진행, (4) `REDIS_HOST` 아예 미설정 시 기존 로컬 개발 방식 그대로
+  회귀 없음, (5) 리셋 시 Redis 키까지 깨끗이 삭제 — 5가지 시나리오 전부 실측 확인.
+- **⚠️ 실제 롤아웃 중 발견한 문서 실수**: SETUP_GUIDE.md 10.5 초안이 "이 레포의 `k8s/deployment.yaml`을
+  복사해서 `ChaosArena-manifests`에 push"라고 안내했는데, 그대로 따르면 Jenkins가 관리하는 실제
+  이미지 태그/`BUILD_NUMBER`/`GIT_COMMIT`/`DEPLOY_DURATION_SECONDS`를 통째로 덮어써서 최신 빌드가
+  옛날 이미지로 롤백될 뻔했다. 사용자가 실제로 그 단계를 진행하며 화면을 공유해줘서 발견 →
+  "새 env 3줄만 손으로 추가, 나머지 필드는 그대로 둔다"는 방식으로 즉시 수정(9.8절과 같은 "파일
+  일부만 최초 1회 수동 반영" 패턴). 가이드 문서 자체도 실제로 한 줄씩 따라 해봐야 이런 실수를
+  잡아낼 수 있다는 사례.
+- **KR2 실제 클러스터 검증 완료**: `redis-secret`/`redis-pv`/`redis` StatefulSet 적용 →
+  `kubectl delete pod redis-0` 후에도 `smoke-test` 키가 살아있음을 확인(PV/RDB 정상). `redis-cli
+  keys "records:*"` 조회 결과 실제 미션 완료 후 `incidents`/`leaderboard`/`recovery_sum`/
+  `recent_history`/`current_combo`/`best_combo`/`leaderboard:seq` 7개 키 전부 정상 생성 확인.
+  **최종 확인**: 이 문제를 처음 발견했던 시나리오를 그대로 재현 — 문서 수정 커밋(`e0d487e`)을
+  push해 Jenkins→ArgoCD 자동 재배포(build #39→#40)를 유발한 뒤 `/api/records`를 다시 조회, 배포
+  전과 완전히 동일한 값(`total_incidents: 3`, `best_recovery_seconds: 1.2`, 리더보드 3건)이 유지되는
+  것을 확인 — 처음 이 작업을 시작하게 만든 그 버그가 실제로 해결됐음을 증명했다. (참고로 같은 응답의
+  `total_requests`/`avg_response_ms`는 이번에도 0으로 리셋됐는데, 이는 의도적으로 Redis로 안 옮긴
+  `metrics_state`이므로 예상된 동작이다.)
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -657,6 +694,10 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **대시보드 UI 일관성 개선** — footer 태그라인 제거, 색상 accent 규칙 통일, 페이지 간 크로스링크로
   빈 여백 채우기, 유사한 페이지끼리 그리드 구조 통일(4.30절). Jenkins 파드 CrashLoopBackOff 재발(4.28절)
   및 GitHub 웹훅 배포 실패(4.29절)도 이 기간에 겪고 해결
+- [x] **기록실(리더보드) Redis 도입** ⭐ — 파드 재시작(모든 CI/CD 자동 배포 포함)마다 리더보드가
+  지워지고 replica 3개끼리 값이 다르던 문제를 실제 화면에서 목격 → Redis(hostPath PV, Jenkins와
+  다른 워커 노드) 도입으로 해결. 로컬 5가지 시나리오 + KR2 실제 클러스터(파드 삭제 후 데이터 보존,
+  실제 CI/CD 재배포 후 리더보드 유지)까지 전부 실측 검증 완료(4.31절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

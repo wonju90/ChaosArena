@@ -28,6 +28,7 @@ from flask import Flask, jsonify, render_template, request
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+import redis
 import requests
 
 app = Flask(__name__)
@@ -68,6 +69,12 @@ GIT_COMMIT = os.environ.get("GIT_COMMIT", "")
 # CI/CD 탭에서 이 값을 파드 복구 시간과 같은 방식으로 S/A/B/C 랭크로 보여주는 데 쓴다.
 DEPLOY_DURATION_SECONDS = os.environ.get("DEPLOY_DURATION_SECONDS", "")
 
+# 기록실(records) 데이터를 저장할 Redis 주소. 비어있으면(로컬 개발, Redis 미설치 클러스터)
+# 아래 records dict(파드 메모리)로 조용히 저하한다 - PROMETHEUS_URL과 같은 패턴.
+REDIS_HOST = os.environ.get("REDIS_HOST", "")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+
 # LOCAL_MODE에서 사용할 가짜 파드 목록 (이름, 노드) - EXPECTED_REPLICAS 기본값(3)과 개수를 맞춤
 MOCK_PODS = [
     ("chaos-demo-mock-a", "local-node-1"),
@@ -98,12 +105,15 @@ DEPLOY_RANK_THRESHOLDS = [
 # ---------------------------------------------------------------------------
 # 2. 메모리 저장소 (일단 전역 변수로 시작, 나중에 MySQL/Redis 등으로 옮길 수 있음)
 #
-# 참고(전역변수 동시성): 이 프로젝트는 데모/포트폴리오 용도라 아래처럼 전역 변수로
-# 상태를 저장해도 충분하다. 다만 실제 운영 서비스라면 여러 요청이 동시에 이 값을
-# 건드릴 때 꼬일 수 있어서 Redis 같은 외부 저장소를 쓰는 게 정석이라는 점만 참고.
+# 참고(전역변수 동시성): current_mission/chaos_state/metrics_state는 데모/포트폴리오
+# 용도라 아래처럼 전역 변수로 저장해도 충분하다(각각 진행 중 미션/토글 상태/최근 100건
+# 지표라 파드 재시작으로 잃어도 크게 문제되지 않는다). 다만 records(기록실 데이터)는
+# 실제로 문제가 됐다 - CI/CD가 파드를 재배포할 때마다 초기화되고 replica 3개끼리도
+# 서로 안 보이는 게 확인돼서, 아래 2.5절에서 Redis로 옮겼다. records dict 자체는
+# Redis가 없거나 응답 안 할 때 저하할 대상으로 계속 남겨둔다.
 # ---------------------------------------------------------------------------
 
-# 오늘의 기록판
+# 오늘의 기록판 (Redis 미설정/장애 시 저하 대상 - 2.5절 get_redis_client() 참고)
 records = {
     "total_incidents": 0,     # 총 장애 발생 횟수
     "recovery_times": [],     # 복구 시간 리스트 (초 단위, 평균 계산용)
@@ -146,6 +156,49 @@ metrics_lock = threading.Lock()
 # 대시보드 자신의 폴링 API(/api/*)까지 집계에 포함시키면, 폴링 자체가 지표를 왜곡해버린다.
 # 시연할 때는 hey, ab, Locust 같은 부하 테스트 도구로 서비스에 트래픽을 흘려주면 된다.
 TRACKED_PATHS = {"/"}
+
+
+# ---------------------------------------------------------------------------
+# 2.5 Redis 연동 - 기록실(records) 데이터가 파드 재시작에도 살아남게
+#
+# 위 records dict는 그 요청을 처리한 파드 프로세스의 메모리에만 있어서, 파드가
+# 재시작되면(CI/CD 자동 배포 포함) 사라지고 replica 3개끼리도 서로 안 보인다.
+# REDIS_HOST가 설정돼 있으면 기록을 Redis에 저장/조회하고, 비어있거나 연결이
+# 실패하면 records dict(파드 메모리)로 조용히 저하한다 - PROMETHEUS_URL/
+# SLACK_WEBHOOK_URL과 같은 "선택적 외부 의존성" 패턴을 그대로 따른다.
+# ---------------------------------------------------------------------------
+
+RECORDS_KEY_INCIDENTS = "records:incidents"
+RECORDS_KEY_RECOVERY_SUM = "records:recovery_sum"
+RECORDS_KEY_LEADERBOARD = "records:leaderboard"
+RECORDS_KEY_LEADERBOARD_SEQ = "records:leaderboard:seq"
+RECORDS_KEY_RECENT_HISTORY = "records:recent_history"
+RECORDS_KEY_CURRENT_COMBO = "records:current_combo"
+RECORDS_KEY_BEST_COMBO = "records:best_combo"
+
+_redis_client = None
+
+
+def get_redis_client():
+    """
+    REDIS_HOST가 비어있으면(로컬 개발, 또는 Redis 미설치 클러스터) None을 반환해
+    호출부가 곧바로 in-memory records로 저하하게 한다. 연결 자체는 최초 호출 때
+    한 번만 만들어 재사용한다(redis-py 클라이언트가 내부적으로 커넥션 풀을 관리하므로
+    매 요청마다 새로 만들 필요가 없다).
+    """
+    global _redis_client
+    if not REDIS_HOST:
+        return None
+    if _redis_client is None:
+        _redis_client = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            password=REDIS_PASSWORD or None,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+    return _redis_client
 
 
 # ---------------------------------------------------------------------------
@@ -587,24 +640,110 @@ def api_mission_status():
     return jsonify({"status": "recovering", "elapsed": round(elapsed, 1)})
 
 
-def _complete_mission(elapsed):
-    """미션 완료 처리를 한 곳에서 담당한다 (중복 코드 방지용 헬퍼 함수)."""
-    rank = compute_rank(elapsed)
+def _record_completion(elapsed, rank):
+    """
+    미션 완료 기록을 Redis(가능하면) 또는 파드 메모리(records dict, 저하 시)에 남기고,
+    이번 완료 반영 후의 current_combo 값을 반환한다.
+    """
+    r = get_redis_client()
+    if r is not None:
+        try:
+            r.incr(RECORDS_KEY_INCIDENTS)
+            r.incrbyfloat(RECORDS_KEY_RECOVERY_SUM, elapsed)
+
+            # 유일한 멤버가 필요해서 elapsed 값 자체가 아니라 순번을 멤버로 쓴다
+            # (같은 초수가 두 번 나오면 ZSET 멤버가 충돌해 하나로 합쳐져 버리기 때문).
+            seq = r.incr(RECORDS_KEY_LEADERBOARD_SEQ)
+            r.zadd(RECORDS_KEY_LEADERBOARD, {f"run-{seq}": elapsed})
+            r.zremrangebyrank(RECORDS_KEY_LEADERBOARD, 3, -1)  # 상위 3개(가장 빠른)만 남김
+
+            r.lpush(RECORDS_KEY_RECENT_HISTORY, elapsed)
+            r.ltrim(RECORDS_KEY_RECENT_HISTORY, 0, 11)  # 최근 12개만 유지
+
+            if rank == "S":
+                new_combo = r.incr(RECORDS_KEY_CURRENT_COMBO)
+            else:
+                r.set(RECORDS_KEY_CURRENT_COMBO, 0)
+                new_combo = 0
+            # GT: 기존 값보다 클 때만 갱신하는 원자 연산 - read-compare-write 레이스가 없다.
+            r.zadd(RECORDS_KEY_BEST_COMBO, {"best": new_combo}, gt=True, ch=True)
+            return new_combo
+        except redis.exceptions.RedisError as e:
+            print(f"Redis 기록 실패, 파드 메모리로 저하: {e}")
+            # 아래 in-memory 경로로 이어서 진행
 
     records["total_incidents"] += 1
     records["recovery_times"].append(elapsed)
     if records["best_time"] is None or elapsed < records["best_time"]:
         records["best_time"] = elapsed
-
-    # 상위 3개 기록만 오름차순으로 남긴다 (하이스코어 보드용)
     records["top_times"] = sorted(records["top_times"] + [elapsed])[:3]
-
-    # 콤보: S랭크가 연속으로 나오면 늘어나고, S가 아니면 끊긴다
     if rank == "S":
         records["current_combo"] += 1
     else:
         records["current_combo"] = 0
     records["best_combo"] = max(records["best_combo"], records["current_combo"])
+    return records["current_combo"]
+
+
+def _fetch_records_snapshot():
+    """
+    화면에 내려줄 기록판 스냅샷을 만든다. Redis가 설정돼 있고 정상이면 Redis에서,
+    아니면 파드 메모리(records dict)에서 읽는다 - 두 경우 모두 같은 모양의 dict를 반환한다.
+    """
+    r = get_redis_client()
+    if r is not None:
+        try:
+            incidents = int(r.get(RECORDS_KEY_INCIDENTS) or 0)
+            recovery_sum = float(r.get(RECORDS_KEY_RECOVERY_SUM) or 0.0)
+
+            # 하이스코어 보드: 1~3등 (금/은/동) - 점수(초)가 낮을수록 빠른 기록
+            top = r.zrange(RECORDS_KEY_LEADERBOARD, 0, 2, withscores=True)
+            leaderboard = [
+                {"rank_no": i + 1, "seconds": round(score, 1)}
+                for i, (_member, score) in enumerate(top)
+            ]
+
+            # LPUSH라 최신이 맨 앞이라서, 원래 순서(오래된 것부터)에 맞추려면 뒤집는다.
+            raw_recent = r.lrange(RECORDS_KEY_RECENT_HISTORY, 0, 11)
+            recent_seconds = [float(t) for t in reversed(raw_recent)]
+
+            current_combo = int(r.get(RECORDS_KEY_CURRENT_COMBO) or 0)
+            best_combo_raw = r.zscore(RECORDS_KEY_BEST_COMBO, "best")
+
+            return {
+                "total_incidents": incidents,
+                "avg_recovery_seconds": round(recovery_sum / incidents, 1) if incidents else 0.0,
+                "best_recovery_seconds": leaderboard[0]["seconds"] if leaderboard else None,
+                "leaderboard": leaderboard,
+                "recent_seconds": recent_seconds,
+                "current_combo": current_combo,
+                "best_combo": int(best_combo_raw) if best_combo_raw is not None else 0,
+            }
+        except redis.exceptions.RedisError as e:
+            print(f"Redis 조회 실패, 파드 메모리로 저하: {e}")
+            # 아래 in-memory 경로로 이어서 진행
+
+    times = records["recovery_times"]
+    return {
+        "total_incidents": records["total_incidents"],
+        "avg_recovery_seconds": round(sum(times) / len(times), 1) if times else 0.0,
+        "best_recovery_seconds": (
+            round(records["best_time"], 1) if records["best_time"] is not None else None
+        ),
+        "leaderboard": [
+            {"rank_no": i + 1, "seconds": round(t, 1)}
+            for i, t in enumerate(records["top_times"])
+        ],
+        "recent_seconds": times[-12:],
+        "current_combo": records["current_combo"],
+        "best_combo": records["best_combo"],
+    }
+
+
+def _complete_mission(elapsed):
+    """미션 완료 처리를 한 곳에서 담당한다 (중복 코드 방지용 헬퍼 함수)."""
+    rank = compute_rank(elapsed)
+    new_combo = _record_completion(elapsed, rank)
 
     current_mission["active"] = False
     current_mission["status"] = "completed"
@@ -616,38 +755,28 @@ def _complete_mission(elapsed):
             "status": "completed",
             "elapsed": round(elapsed, 1),
             "rank": rank,
-            "combo": records["current_combo"],
+            "combo": new_combo,
         }
     )
 
 
 @app.route("/api/records")
 def api_records():
-    times = records["recovery_times"]
-    avg_time = round(sum(times) / len(times), 1) if times else 0.0
-    best_time = round(records["best_time"], 1) if records["best_time"] is not None else None
-
-    # 하이스코어 보드: 1~3등 (금/은/동) 형태로 내려준다
-    leaderboard = [
-        {"rank_no": i + 1, "seconds": round(t, 1)}
-        for i, t in enumerate(records["top_times"])
-    ]
-
+    snap = _fetch_records_snapshot()
     # 최근 기록 막대그래프용 (최대 12개, 오래된 것부터, 랭크 포함)
     recent_history = [
         {"seconds": round(t, 1), "rank": compute_rank(t)}
-        for t in times[-12:]
+        for t in snap["recent_seconds"]
     ]
-
     return jsonify(
         {
-            "total_incidents": records["total_incidents"],
-            "avg_recovery_seconds": avg_time,
-            "best_recovery_seconds": best_time,
-            "leaderboard": leaderboard,
+            "total_incidents": snap["total_incidents"],
+            "avg_recovery_seconds": snap["avg_recovery_seconds"],
+            "best_recovery_seconds": snap["best_recovery_seconds"],
+            "leaderboard": snap["leaderboard"],
             "recent_history": recent_history,
-            "current_combo": records["current_combo"],
-            "best_combo": records["best_combo"],
+            "current_combo": snap["current_combo"],
+            "best_combo": snap["best_combo"],
         }
     )
 
@@ -655,6 +784,23 @@ def api_records():
 @app.route("/api/records/reset", methods=["POST"])
 def api_records_reset():
     """데모를 처음부터 다시 보여주고 싶을 때 기록판만 초기화한다 (진행 중인 미션에는 영향 없음)."""
+    r = get_redis_client()
+    if r is not None:
+        try:
+            r.delete(
+                RECORDS_KEY_INCIDENTS,
+                RECORDS_KEY_RECOVERY_SUM,
+                RECORDS_KEY_LEADERBOARD,
+                RECORDS_KEY_LEADERBOARD_SEQ,
+                RECORDS_KEY_RECENT_HISTORY,
+                RECORDS_KEY_CURRENT_COMBO,
+                RECORDS_KEY_BEST_COMBO,
+            )
+        except redis.exceptions.RedisError as e:
+            print(f"Redis 초기화 실패: {e}")
+
+    # Redis 사용 여부와 무관하게 파드 메모리 쪽도 항상 같이 초기화한다 - Redis가 잠깐
+    # 끊긴 사이에 저하돼서 쓰인 기록이 있었더라도 리셋 후엔 뒤섞이지 않게 하기 위함.
     records["total_incidents"] = 0
     records["recovery_times"] = []
     records["best_time"] = None

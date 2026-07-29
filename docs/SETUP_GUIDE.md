@@ -817,6 +817,111 @@ Jenkins 빌드가 SUCCESS로 끝나면(`Verify Deployment`까지 정상 통과),
 
 ---
 
+## Part 10. Redis — 기록실(리더보드)이 배포/재시작에도 살아남게
+
+### 10.1 왜 필요한가
+
+기록실(총 발생 횟수/평균 복구시간/하이스코어)은 지금까지 `app.py`의 파이썬 딕셔너리(`records`)에만
+저장돼 있었다. 이건 그 요청을 처리한 **파드 프로세스의 메모리**일 뿐이라, (1) `chaos-demo` 파드가
+재시작될 때마다(수동 삭제뿐 아니라 Jenkins→ArgoCD의 **모든 자동 배포**가 포함된다) 초기화되고,
+(2) replica 3대가 서로 메모리를 공유하지 않아 어느 파드가 응답하냐에 따라 값이 달라진다. 실제로
+문서만 고친 커밋 하나가 배포를 트리거해 리더보드가 통째로 0이 되는 걸 실측으로 확인했다(자세한
+배경은 `docs/CONCEPTS.md` 20절). Redis를 붙여서 이 데이터만 파드 바깥의 진짜 저장소로 옮긴다.
+
+**Redis란?**: 디스크가 아니라 메모리에 데이터를 두는 key-value 저장소다. "카운터 1 증가"(`INCR`)나
+"정렬된 상위 N개 유지"(`ZADD`/`ZRANGE`) 같은 연산이 원자적으로(여러 곳에서 동시에 건드려도 안전하게)
+바로 지원돼서, 이번처럼 "몇 개의 카운터 + 상위 3개 목록"류 데이터에 정확히 맞는다.
+
+### 10.2 사전 준비 — hostPath 디렉터리 (Jenkins와 다른 워커 노드에)
+
+Jenkins가 이미 `chaosarena-worker1-kr2`의 로컬 디스크를 쓰고 있으므로(Part 6.1), Redis는 **다른**
+워커 노드에 둬서 한 노드 장애로 둘 다 죽는 걸 피한다. 실제 노드 이름을 먼저 확인한다:
+```bash
+kubectl get nodes
+```
+`k8s/redis-pv.yaml`의 `nodeAffinity`가 가리키는 노드(기본값 `chaosarena-worker2-kr2`)가 실제
+존재하는 이름과 다르면 파일을 열어서 맞게 고친다. 그 노드에 SSH로 접속해 디렉터리를 준비한다
+(Jenkins 때와 동일한 패턴, `k8s/jenkins-pv.yaml` 상단 주석 참고):
+```bash
+ssh -J ubuntu@<마스터_공인IP> ubuntu@<해당_워커_사설IP>
+sudo mkdir -p /data/redis
+sudo chown 999:999 /data/redis   # redis:7-alpine 컨테이너의 기본 실행 UID/GID
+```
+
+### 10.3 비밀번호 Secret 준비
+
+```bash
+cp k8s/redis-secret.example.yaml k8s/redis-secret.yaml
+```
+`k8s/redis-secret.yaml`을 열어 `password` 값을 실제 랜덤 문자열로 교체(예:
+`openssl rand -base64 24`) — `redis-secret.yaml`은 `.gitignore`에 등록돼 있어 실수로 커밋되지 않는다.
+
+### 10.4 Redis 적용
+
+```bash
+kubectl apply -f k8s/redis-secret.yaml
+kubectl apply -f k8s/redis-pv.yaml
+kubectl apply -f k8s/redis.yaml
+```
+
+### ✅ 확인 — Redis 자체가 정상인지 (앱을 붙이기 전에 먼저)
+```bash
+kubectl get pods -l app=redis
+```
+예상 출력(`READY 1/1`, `STATUS Running`이면 성공):
+```
+NAME      READY   STATUS    RESTARTS   AGE
+redis-0   1/1     Running   0          40s
+```
+직접 접속해서 명령을 날려본다(비밀번호는 10.3에서 넣은 값):
+```bash
+kubectl exec -it redis-0 -- redis-cli -a <redis-secret.yaml의 password> ping
+# 출력: PONG
+```
+
+**핵심 확인 — 재시작해도 데이터가 진짜 남는지(이번 작업의 목적 그 자체)**:
+```bash
+kubectl exec -it redis-0 -- redis-cli -a <password> set smoke-test hello
+kubectl delete pod redis-0          # StatefulSet이 곧바로 재생성한다
+kubectl wait --for=condition=Ready pod/redis-0 --timeout=60s
+kubectl exec -it redis-0 -- redis-cli -a <password> get smoke-test
+# 출력: hello  ← 파드가 새로 떴는데도 값이 남아있으면 PV/RDB가 제대로 동작하는 것
+```
+
+### 10.5 앱 코드 반영
+
+`k8s/deployment.yaml`에 이미 `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD` env가 추가돼 있고(이 레포
+쪽), `app.py`도 Redis가 있으면 자동으로 쓰고 없으면 파드 메모리로 저하하게 이미 구현돼 있다. Part 9의
+GitOps 흐름을 그대로 따른다 — 이 레포에서 코드를 고치는 게 아니라, **9.6절 방식대로 이미지가 새로
+빌드되게 그냥 평소처럼 push**하면 된다(Jenkins가 빌드→서명 후 `ChaosArena-manifests`에 새 이미지
+태그를 커밋 → ArgoCD가 반영). 최초 1회만, `redis-secret`을 앱이 읽을 수 있게 `k8s/deployment.yaml`도
+`ChaosArena-manifests/argocd-managed/`에 최신 버전으로 반영돼 있는지 확인한다(9.2절처럼 이미
+그 폴더에 있는 파일이므로, 이 레포의 최신 `k8s/deployment.yaml`을 복사해 커밋+push).
+
+### ✅ 확인 — 실제로 Redis를 쓰고 있는지
+
+```bash
+kubectl exec -it redis-0 -- redis-cli -a <password> keys "records:*"
+```
+게임 콘솔에서 미션을 하나 완료한 뒤 다시 실행하면, 예상 출력처럼 키가 보여야 한다:
+```
+1) "records:incidents"
+2) "records:recovery_sum"
+3) "records:leaderboard"
+4) "records:leaderboard:seq"
+5) "records:recent_history"
+6) "records:current_combo"
+```
+(`records:best_combo`는 S랭크가 한 번 이상 나와야 생긴다.) 하나도 안 보이면 앱이 아직 Redis
+미설정 상태(`REDIS_HOST` 미반영, `redis-secret` 없음 등)로 파드 메모리에 저하 중인 것이니 배포
+상태와 Secret부터 확인.
+
+**이번 문제를 발견했던 시나리오를 그대로 재현해서 확인**: 아무 커밋이나(문서 수정도 됨) push해서
+Jenkins→ArgoCD 자동 재배포를 한 번 유발한다. 재배포 완료 후 `/records` 페이지를 새로고침해서
+리더보드가 **이번엔 0으로 리셋되지 않는지** 확인한다 — 이게 이번 Part 전체의 성공 기준이다.
+
+---
+
 ## 다음에 추가될 내용 (아직 미착수)
 
 - **TLS(HTTPS)**: cert-manager + Let's Encrypt. 443 포트를 보안그룹에 추가로 열어야 함(80은 이미 열려있음).

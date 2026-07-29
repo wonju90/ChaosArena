@@ -162,6 +162,29 @@
       </div>
       <div class="rank-zone-labels" id="rank-zone-labels"></div>
     </div>
+
+    <!-- 최근 전적 요약 — 기록실(/records)과 같은 데이터를 재사용 -->
+    <div class="panel">
+      <h2 class="panel-title">{{ ic.i('trophy') }} 최근 전적</h2>
+      <div class="stat-grid">
+        <div class="stat-tile stat-accent-blue">
+          <div class="stat-icon">💥</div>
+          <div class="stat-value"><span id="record-total">0</span></div>
+          <div class="stat-label">총 발생 횟수</div>
+        </div>
+        <div class="stat-tile stat-accent-orange">
+          <div class="stat-icon">⏱️</div>
+          <div class="stat-value"><span id="record-avg">-</span><span class="text-lg">초</span></div>
+          <div class="stat-label">평균 복구 시간</div>
+        </div>
+        <div class="stat-tile stat-accent-gold">
+          <div class="stat-icon">⭐</div>
+          <div class="stat-value"><span id="record-best">-</span><span class="text-lg">초</span></div>
+          <div class="stat-label">역대 최고 기록</div>
+        </div>
+      </div>
+      <a href="/records" class="mt-3 inline-block text-[12px] text-accent hover:underline">기록실에서 전체 보기 →</a>
+    </div>
   </div>
 
   <!-- ── 우측: 제어판 ─────────────────────────────────────── -->
@@ -462,12 +485,26 @@ async function recoverAll() {
   showToast('✅ 모든 Chaos 모드 정상 복귀');
 }
 
+// 최근 전적 요약 — records.html의 refreshRecords()와 같은 패턴/id 재사용
+async function refreshRecords() {
+  try {
+    const res = await fetch('/api/records');
+    const data = await res.json();
+    document.getElementById('record-total').innerText = Number(data.total_incidents).toLocaleString();
+    document.getElementById('record-avg').innerText = data.avg_recovery_seconds;
+    document.getElementById('record-best').innerText =
+      data.best_recovery_seconds !== null ? data.best_recovery_seconds : '-';
+  } catch (e) {}
+}
+
 // 초기화
 document.getElementById('mute-toggle').innerText = isMuted() ? '🔇' : '🔊';
 buildRankZoneBar();
 setInterval(refreshPods, 2000);
 setInterval(refreshMission, 500);
+setInterval(refreshRecords, 5000);
 refreshPods();
 refreshMission();
+refreshRecords();
 </script>
 {% endblock %}

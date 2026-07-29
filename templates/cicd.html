@@ -80,6 +80,20 @@
   .history-banner.banner-success { background: rgba(52,211,153,0.15); color: #34d399; }
   .history-banner.banner-rollback { background: rgba(248,113,113,0.18); color: #f87171; }
 
+  /* 우측 하단 "최근 장애 복구 기록" 미니 패널 — /api/records 재사용, 기록실 페이지로 이어주는 크로스링크 */
+  .mini-records-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0; border-bottom: 1px solid rgba(148,163,184,0.08); font-size: 13px;
+  }
+  .mini-records-row:last-child { border-bottom: none; }
+  .mini-records-label { color: #94a3b8; }
+  .mini-records-value { font-weight: 700; color: #e8eef7; font-variant-numeric: tabular-nums; }
+  .mini-records-empty { color: #64748b; font-size: 13px; text-align: center; padding: 16px 0; }
+  .mini-records-link {
+    display: inline-block; margin-top: 10px; font-size: 12px; color: #38bdf8; text-decoration: none;
+  }
+  .mini-records-link:hover { text-decoration: underline; }
+
   /* 랭크 카드 → 히스토리 카드로 흘러가는 낙하 파티클 */
   .history-spark {
     position: fixed; width: 8px; height: 8px; border-radius: 999px; pointer-events: none; z-index: 70;
@@ -136,7 +150,7 @@
           <div id="deploy-stat-build" class="stat-value">--</div>
           <div class="stat-label">빌드 번호</div>
         </div>
-        <div class="stat-tile stat-accent-green">
+        <div class="stat-tile stat-accent-blue">
           <div class="stat-icon">📝</div>
           <div id="deploy-stat-commit" class="stat-value" style="font-size:20px;">--</div>
           <div class="stat-label">커밋</div>
@@ -166,6 +180,14 @@
         배포 성공/롤백 이벤트를 최신순으로 최대 10개까지 보여줍니다. 롤백은 헬스체크 실패로 이전
         버전으로 자동 복구된 경우입니다.
       </p>
+    </div>
+
+    <div class="panel">
+      <h2 class="panel-title">{{ ic.i('trophy') }} 최근 장애 복구 기록</h2>
+      <div id="mini-records-summary" class="mini-records-summary">
+        <div class="mini-records-empty">아직 기록이 없습니다</div>
+      </div>
+      <a href="/records" class="mini-records-link">기록실에서 전체 보기 →</a>
     </div>
   </div>
 
@@ -470,10 +492,43 @@ async function refreshDeployHistory() {
   } catch (e) {}
 }
 
+async function refreshMiniRecords() {
+  try {
+    const res = await fetch('/api/records');
+    const data = await res.json();
+    const el = document.getElementById('mini-records-summary');
+    if (!data.leaderboard || data.leaderboard.length === 0) {
+      el.innerHTML = '<div class="mini-records-empty">아직 기록이 없습니다</div>';
+      return;
+    }
+    const best = data.leaderboard[0];
+    const recent = (data.recent_history || []).slice(-2).reverse();
+    let html = `
+      <div class="mini-records-row">
+        <span class="mini-records-label">🥇 최고 기록</span>
+        <span class="mini-records-value">${best.seconds}초</span>
+      </div>
+      <div class="mini-records-row">
+        <span class="mini-records-label">📋 총 발생 횟수</span>
+        <span class="mini-records-value">${data.total_incidents}회</span>
+      </div>`;
+    recent.forEach((r) => {
+      html += `
+      <div class="mini-records-row">
+        <span class="mini-records-label">최근 복구</span>
+        <span class="mini-records-value">${r.seconds}초 (${r.rank})</span>
+      </div>`;
+    });
+    el.innerHTML = html;
+  } catch (e) {}
+}
+
 buildDeployRankZoneBar();
 setInterval(refreshDeployRank, 5000);
 refreshDeployRank();
 setInterval(refreshDeployHistory, 5000);
 refreshDeployHistory();
+setInterval(refreshMiniRecords, 5000);
+refreshMiniRecords();
 </script>
 {% endblock %}

@@ -17,12 +17,17 @@
 ```mermaid
 flowchart TB
     User["🖥️ 사용자 브라우저"] -->|"HTTPS www.chaosarena.cloud"| GSLB["🧭 GSLB (DNS Plus)<br/>FAILOVER · TTL 30s"]
-    GSLB -->|"우선순위 1 · Active"| KR2
-    GSLB -->|"우선순위 2 · Standby"| KR1
+    GSLB -->|"우선순위 1 · Active"| KR1
+    GSLB -->|"우선순위 2 · Standby"| KR2
 
-    subgraph KR2 ["☸️ KR2 · 평촌 (Active)"]
-        Ingress2["Ingress-nginx"] --> Pods2["chaos-demo × 3 (Flask)"]
-        Pods2 <--> Redis["Redis (기록실)"]
+    subgraph KR1 ["☸️ KR1 · 판교 (Active)"]
+        Ingress1["Ingress-nginx"] --> Pods1["chaos-demo × 3 (Flask)<br/>+ HPA"]
+        Pods1 <--> Redis1["Redis (기록실, KR1 전용)"]
+    end
+
+    subgraph KR2 ["☸️ KR2 · 평촌 (Standby)"]
+        Ingress2["Ingress-nginx"] --> Pods2["chaos-demo × 3 (Flask)<br/>+ HPA"]
+        Pods2 <--> Redis2["Redis (기록실, KR2 전용)"]
         Pods2 -.->|"/metrics 스크레이핑"| Prom["Prometheus"]
         Prom --> Alertmgr["Alertmanager"]
         Jenkins["Jenkins (CI)"] -->|"이미지 push + 서명"| NCR["NCR"]
@@ -31,13 +36,15 @@ flowchart TB
         ArgoCD --> ManifestsRepo
     end
 
-    subgraph KR1 ["☸️ KR1 · 판교 (Standby)"]
-        Ingress1["Ingress-nginx"] --> Pods1["chaos-demo × 1 (test)"]
-    end
-
     SourceRepo["GitHub: ChaosArena (소스)"] -->|"push → webhook"| Jenkins
     Alertmgr -->|"알림"| Slack["💬 Slack"]
 ```
+
+**왜 KR1엔 Jenkins/ArgoCD/Prometheus가 없는가**: HPA·Redis처럼 사용자 트래픽이 실제로 지나가는
+"서비스 경로" 컴포넌트는 두 리전에 대칭으로 있어야 하지만, Jenkins/ArgoCD/Prometheus는 운영자만 보는
+"컨트롤 플레인"이라 하나로 관리하는 게 일반적이다 — 자세한 기준은
+[`CONCEPTS.md` 21절](./CONCEPTS.md#21-서비스-경로-vs-컨트롤-플레인--왜-모든-기능을-양쪽-리전에-복제하지-않는가)
+참고.
 
 이 다이어그램은 클로드가 이전에 만들어준 인터랙티브 아키텍처 아티팩트와 같은 내용을 텍스트로
 정리한 것이다. 아래부터는 이 그림 위에서 "실제로 무슨 일이 벌어질 때" 어떤 화살표를 타고 가는지
@@ -53,7 +60,7 @@ flowchart TB
 
 1. 브라우저가 `www.chaosarena.cloud`를 입력하면, DNS 조회가 **GSLB(NHN Cloud DNS Plus)**로 간다.
    GSLB는 KR1/KR2 두 리전 각각의 `/health`를 주기적으로 확인하고 있다가, 지금 살아있는 쪽(우선순위가
-   높은 Active, 평소엔 KR2) 의 IP를 돌려준다. **이 단계에서 이미 "어느 서버로 갈지"가 정해진다** —
+   높은 Active, 평소엔 KR1) 의 IP를 돌려준다. **이 단계에서 이미 "어느 서버로 갈지"가 정해진다** —
    앱 코드는 이걸 전혀 모른다.
 2. 그 IP로 요청이 도착하면, 그 클러스터의 **Ingress-nginx**가 받는다. Ingress는 포트 번호 없이
    (`www.chaosarena.cloud`, `:80` 생략) 접속할 수 있게 해주는 "안내 데스크" 역할이다
@@ -154,18 +161,19 @@ Prometheus가 각 파드의 /metrics를 주기적으로 긁어감 → 조건이 
 
 ---
 
-## 5. 시나리오: 리전(KR2) 전체가 죽었을 때
+## 5. 시나리오: 리전(KR1) 전체가 죽었을 때
 
 ```
-GSLB 헬스체크 실패 감지 → 자동으로 Standby(KR1)의 IP로 응답 전환 → 약 80초 후 사용자가 느끼는 다운타임 없이 복구
+GSLB 헬스체크 실패 감지 → 자동으로 Standby(KR2)의 IP로 응답 전환 → 1분 남짓 후 사용자가 느끼는 다운타임 없이 복구
 ```
 
 1. GSLB는 KR1/KR2 각각의 `/health`를 계속 확인하고 있다.
-2. KR2가(마스터 장애, 네트워크 단절 등으로) 응답을 멈추면, GSLB는 그 사실을 헬스체크 실패로 감지한다.
-3. 그다음부터 DNS 질의에 KR1(Standby)의 IP를 대신 돌려준다 — **사람이 개입할 필요가 없다.**
-4. 이 전환은 TTL 30초 설정 기준으로 약 80초 정도 걸리는 것으로 실측됐다(`scripts/06-test-gslb-failover.sh`
-   로 검증).
-5. KR2가 복구되면, GSLB가 다시 KR2를 우선(Active)으로 인식해 자동으로 되돌아간다(failback).
+2. KR1이(마스터 장애, 네트워크 단절 등으로) 응답을 멈추면, GSLB는 그 사실을 헬스체크 실패로 감지한다.
+3. 그다음부터 DNS 질의에 KR2(Standby)의 IP를 대신 돌려준다 — **사람이 개입할 필요가 없다.**
+4. 이 전환은 TTL 30초 설정 기준으로 대략 1분 남짓(실측 60~80초대) 걸리는 것으로 여러 차례
+   확인됐다(`scripts/06-test-gslb-failover.sh`로 검증 — KR1을 최초 정식 구축했을 때 약 80초,
+   재구축 후 재검증 때는 약 67초).
+5. KR1이 복구되면, GSLB가 다시 KR1을 우선(Active)으로 인식해 자동으로 되돌아간다(failback).
 
 이 흐름은 앞의 4가지와 달리 **애플리케이션 코드가 전혀 관여하지 않는다** — 순수하게 인프라 계층(DNS)
 에서 일어나는 자가치유다. "파드 레벨 자가치유"(시나리오 2)와 "리전 레벨 자가치유"(이 시나리오)가
@@ -181,11 +189,12 @@ GSLB 헬스체크 실패 감지 → 자동으로 Standby(KR1)의 IP로 응답 �
 |---|---|---|
 | GSLB (DNS Plus) | 리전 장애 시 자동 트래픽 전환 | NHN 콘솔에서 직접 구성(Terraform 밖) |
 | Ingress-nginx | 포트 번호 없는 라우팅 | `k8s/chaos-demo-ingress.yaml`, `k8s/ingress-nginx-values.yaml` |
-| chaos-demo (Flask) | 게임 대시보드 + 자가치유 대상 워크로드 | `app.py`, `k8s/deployment.yaml` |
-| Redis | 기록실(리더보드) 영속 저장 | `k8s/redis.yaml`, `k8s/redis-pv.yaml` |
-| Prometheus/Grafana/Alertmanager | 지표 수집 + 알림 | `k8s/servicemonitor.yaml`, `k8s/prometheusrule.yaml`, `k8s/alertmanager-slack-values.yaml` |
-| Jenkins | CI(빌드+서명) | `Jenkinsfile`, `k8s/jenkins-values.yaml` |
-| ArgoCD | CD(GitOps 반영) | `k8s/argocd-application.yaml` |
+| chaos-demo (Flask) | 게임 대시보드 + 자가치유 대상 워크로드 | `app.py`, `k8s/deployment.yaml` — **KR1/KR2 양쪽 동일** |
+| HPA | CPU 기준 오토스케일링 | `k8s/hpa.yaml` — **KR1/KR2 양쪽 동일** |
+| Redis | 기록실(리더보드) 영속 저장 | `k8s/redis.yaml`, `k8s/redis-pv.yaml`(KR2)/`redis-pv-kr1.yaml`(KR1) — **리전마다 독립 인스턴스** |
+| Prometheus/Grafana/Alertmanager | 지표 수집 + 알림 | `k8s/servicemonitor.yaml`, `k8s/prometheusrule.yaml`, `k8s/alertmanager-slack-values.yaml` — **KR2 전용**(21절) |
+| Jenkins | CI(빌드+서명) | `Jenkinsfile`, `k8s/jenkins-values.yaml` — **KR2 전용**(21절) |
+| ArgoCD | CD(GitOps 반영) | `k8s/argocd-application.yaml` — **KR2 전용**(21절) |
 | NCR | 비공개 이미지 저장소 | Terraform 밖, 콘솔에서 생성 |
 | ChaosArena-manifests(별도 레포) | GitOps가 지켜보는 실제 배포 대상 | 별도 GitHub 레포 |
 
@@ -196,3 +205,8 @@ GSLB 헬스체크 실패 감지 → 자동으로 Standby(KR1)의 IP로 응답 �
 이 문서는 리더보드가 배포할 때마다 초기화되는 버그를 실제로 화면에서 목격하고, 그 원인(파드 메모리
 상태)을 설명하는 대화 중에 "전체 흐름을 한눈에 보고 싶다"는 요청으로 만들어졌다. 그 버그 자체와
 Redis 도입 과정은 `PROJECT_LOG.md` 4.31절, `CONCEPTS.md` 20절에 자세히 남아있다.
+
+**업데이트(KR1 재구축)**: KR1(판교)의 RAM 쿼터가 풀려 정식 스펙으로 재구축하고, 원래 설계대로
+GSLB Active를 KR1로 되돌리면서 이 문서의 다이어그램·시나리오 5·컴포넌트 표를 갱신했다. KR1에도
+Redis/HPA를 새로 붙였지만 Jenkins/ArgoCD/Prometheus는 의도적으로 KR2에만 남겨뒀다 — 그 판단 기준은
+`CONCEPTS.md` 21절(서비스 경로 vs 컨트롤 플레인), 재구축 과정 자체는 `PROJECT_LOG.md` 4.33절 참고.

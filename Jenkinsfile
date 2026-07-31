@@ -6,9 +6,16 @@
 // 버전으로 되돌리는 커밋을 자동으로 push한다(자동 롤백, CONCEPTS.md 17절).
 // 성공/롤백 결과는 매번 chaos-deploy-history ConfigMap에 한 줄씩 기록해서 CI/CD 탭의 배포
 // 히스토리 타임라인에 남긴다(CONCEPTS.md 18절).
+// KR1/KR2 각자 독립된 Jenkins가 이 파일을 그대로 공유해서 쓴다 — env.REGION 하나로 분기한다.
 
 def REGISTRY = "55901daa-kr1-registry.container.nhncloud.com/chaosarena-registry/chaos-arena"
-def IMAGE_TAG = "jenkins-${env.BUILD_NUMBER}"
+// env.REGION은 Jenkins 컨트롤러 자체에 심어둔 값(k8s/jenkins-values.yaml/-kr1.yaml의 containerEnv) —
+// KR1/KR2가 각자 독립된 Jenkins를 갖게 되면서(컨트롤 플레인 이중화), 같은 Jenkinsfile을 그대로 쓰되
+// 이 값 하나로 "어느 리전의 배포인지"를 구분한다.
+// 태그에 리전을 안 붙이면: 두 Jenkins가 서로 다른 독립된 BUILD_NUMBER 카운터를 갖고 있어서,
+// KR1의 12번째 빌드와 KR2의 12번째 빌드가 같은 NCR 태그를 덮어써버린다.
+def IMAGE_TAG = "${env.REGION}-jenkins-${env.BUILD_NUMBER}"
+def MANIFESTS_PATH = "argocd-managed-${env.REGION}"
 def MANIFESTS_REPO = "github.com/wonju90/ChaosArena-manifests.git"
 
 pipeline {
@@ -142,7 +149,7 @@ spec:
 
                         rm -rf manifests-repo
                         git clone https://\${GIT_MANIFESTS_TOKEN}@${MANIFESTS_REPO} manifests-repo
-                        cd manifests-repo/argocd-managed
+                        cd manifests-repo/${MANIFESTS_PATH}
 
                         # 헬스체크 실패 시 되돌릴 수 있도록, 덮어쓰기 전의 값을 워크스페이스에 파일로
                         # 남겨둔다 — 워크스페이스는 스테이지/컨테이너를 넘나들며 공유되므로, 다음
@@ -165,6 +172,10 @@ spec:
                         git config user.name "jenkins-ci"
                         git add deployment.yaml
                         git commit -m "chaos-demo: bump to ${IMAGE_TAG} (build #${env.BUILD_NUMBER}, ${env.GIT_COMMIT_SHORT})" || echo "변경 없음, 커밋 스킵"
+                        # KR1/KR2 두 Jenkins가 같은 main 브랜치에(서로 다른 폴더지만) 각자 커밋하므로,
+                        # 하필 비슷한 시각에 겹치면 논-패스트포워드로 push가 거부될 수 있다 — pusher가
+                        # 하나뿐이던 지금까지는 안 겪은 문제라 미리 방어해둔다.
+                        git pull --rebase origin main
                         git push origin main
                     """
                 }
@@ -202,7 +213,7 @@ spec:
                             // deploy-history-configmap.yaml은 반드시 미리 레포에 존재해야 한다
                             // (docs/SETUP_GUIDE.md 참고, 최초 1회만 사용자가 직접 push).
                             sh """
-                                cd manifests-repo/argocd-managed
+                                cd manifests-repo/${MANIFESTS_PATH}
 
                                 TIMESTAMP=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
                                 NEW_LINE='{"build_number":"${env.BUILD_NUMBER}","git_commit":"${env.GIT_COMMIT_SHORT}","status":"success","timestamp":"'"\$TIMESTAMP"'"}'
@@ -213,6 +224,7 @@ spec:
 
                                 git add deploy-history-configmap.yaml
                                 git commit -m "history: chaos-demo build #${env.BUILD_NUMBER} 배포 성공 기록" || echo "변경 없음, 커밋 스킵"
+                                git pull --rebase origin main
                                 git push origin main
                             """
                         }
@@ -220,7 +232,7 @@ spec:
                         if (!healthy) {
                             echo "배포 후 약 2분 동안 build_number가 ${env.BUILD_NUMBER}로 바뀌지 않음 — 이전 버전으로 롤백합니다."
                             sh """
-                                cd manifests-repo/argocd-managed
+                                cd manifests-repo/${MANIFESTS_PATH}
                                 source ../rollback-info.env
 
                                 yq eval -i '(.spec.template.spec.containers[0].image) = strenv(PREVIOUS_IMAGE)' deployment.yaml
@@ -237,6 +249,7 @@ spec:
 
                                 git add deployment.yaml deploy-history-configmap.yaml
                                 git commit -m "ROLLBACK: chaos-demo build #${env.BUILD_NUMBER} 헬스체크 실패, build #\$PREVIOUS_BUILD_NUMBER로 복구"
+                                git pull --rebase origin main
                                 git push origin main
                             """
                             error("배포 후 헬스체크 실패 — 이전 빌드로 자동 롤백 커밋을 push했습니다.")

@@ -15,7 +15,7 @@ spec:
   source:
     repoURL: https://github.com/wonju90/ChaosArena-manifests.git
     targetRevision: main
-    path: argocd-managed
+    path: argocd-managed-kr2   # KR1도 자기 몫(argocd-managed-kr1)을 갖게 되면서 리전별로 개명함
 
   destination:
     # ArgoCD가 설치된 클러스터 자기 자신(KR2)을 가리키는 특수 값 — 별도 kubeconfig 등록 불필요.

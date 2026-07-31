@@ -160,6 +160,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/><path d="M20 4v4M22 6h-4"/></svg>
         CI/CD 미션
       </a>
+      <a href="/infra" class="rail-link {% if active_page == 'infra' %}active{% endif %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        인프라 지도
+      </a>
     </nav>
 
     <div class="mt-auto flex flex-col gap-2 px-1">
@@ -194,7 +198,7 @@
 
     <!-- 모바일 전용 탭 네비게이션 (사이드바가 숨겨지는 화면폭) -->
     <nav class="md:hidden flex gap-1 overflow-x-auto border-b border-line bg-rail px-3 py-2">
-      {% set mnav = [('/', 'game', '⚡ 게임'), ('/monitor', 'monitor', '📊 대시보드'), ('/records', 'records', '🏆 기록'), ('/cicd', 'cicd', '🚀 CI/CD')] %}
+      {% set mnav = [('/', 'game', '⚡ 게임'), ('/monitor', 'monitor', '📊 대시보드'), ('/records', 'records', '🏆 기록'), ('/cicd', 'cicd', '🚀 CI/CD'), ('/infra', 'infra', '🌐 인프라')] %}
       {% for path, key, label in mnav %}
       <a href="{{ path }}" class="shrink-0 rounded-lg px-3 py-1.5 text-[13px] font-semibold {% if active_page == key %}bg-accent/10 text-ink{% else %}text-subink{% endif %}">{{ label }}</a>
       {% endfor %}

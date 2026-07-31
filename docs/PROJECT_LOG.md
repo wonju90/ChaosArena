@@ -715,6 +715,46 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   `k8s/alertmanager-slack-values-kr1.yaml`(신규, `[KR1]` 접두어), `ChaosArena-manifests` 레포의
   `argocd-managed` → `argocd-managed-kr2`(rename) + `argocd-managed-kr1/`(신규 시딩).
 
+### 4.35 인프라 지도(/infra) 탭 — 리전 상태 + GSLB 페일오버를 화면으로 관찰 ⭐
+
+- **배경**: 4.34절에서 만든 컨트롤 플레인 이중화는 "KR2가 죽어도 KR1이 혼자 배포할 수 있다"를
+  증명했지만, 그 failover 자체(8절 GSLB)는 지금까지 `scripts/06-test-gslb-failover.sh`라는 외부
+  스크립트로만 관찰 가능했다. 사용자가 "ArgoCD의 앱 트리 화면처럼, 인프라 전체를 한눈에 보여주고
+  리전을 강제로 내리면 실시간으로 빨갛게 반응하는 대시보드"를 새 탭으로 요청.
+- **범위 확정 (Plan 단계에서 사용자에게 직접 질문)**: 리전을 "죽이는" 것 자체를 앱 안의 버튼으로
+  만들지 물었고, **패시브(관찰만) 방식**으로 확정 — 실제 kill 버튼을 만들려면 이 public 앱이 반대편
+  리전을 조작할 크레덴셜을 들고 있어야 해서, "이 앱은 자기 파드만 최소 권한으로 건드린다"는 기존
+  RBAC 원칙과 충돌하기 때문. 리전은 지금처럼 사용자가 터미널에서 직접 내리고, 대시보드는 결과만
+  관찰한다.
+- **설계 검증(Plan 에이전트 크리틱에서 잡힌 것)**: 처음 구상은 "요청마다 상대 리전에 동기 HTTP
+  확인"이었는데, 이러면 리전이 죽어있는 바로 그 데모 순간에 폴링마다 timeout(2초)을 기다리게 돼
+  화면 자체가 굼떠지는 문제가 있었다. `_cpu_burn`(CPU 부하 시뮬레이션)에 이미 쓰던
+  `threading.Thread(daemon=True)` 패턴을 재사용해서, 5초마다 백그라운드에서 미리 확인해 캐시
+  딕셔너리를 통째로 스왑해두고 `/api/regions`는 그 캐시만 읽게 바꿨다. 또한 브라우저가 상대 리전
+  공인IP에 직접 fetch하는 안도 검토했는데, 사이트가 HTTPS인데 리전 직접 접속은 평문 HTTP라
+  **믹스드 콘텐츠로 브라우저가 차단**한다는 게 확인돼 처음부터 배제하고 서버사이드 프록시로
+  확정했다.
+- **GSLB "현재 트래픽 대상"은 추측하지 않고 실제로 확인**: 상대 리전이 안 닿는다고 "그럼 자기
+  자신이 대상이겠지"로 지레짐작하지 않고, 공개 도메인(`https://www.chaosarena.cloud/api/status`)을
+  실제로 호출해 `version` 필드로 판정 — 이래야 이 기능의 존재 이유인 GSLB의 실제 TTL 지연
+  (30~80초)을 화면에서 그대로 보여줄 수 있다. 판정 실패 시 마지막 값을 재사용하지 않고
+  `gslb_target: null`을 그대로 반환, 화면은 "판정 중…"을 명시.
+- **새 환경변수 `REGIONS_JSON`**: KR1/KR2 양쪽에 완전히 동일한 값(두 리전의 공인 주소 목록)을
+  심는다 — `APP_VERSION`/Jenkins `REGION`과 같은 "대칭 설정값 공유" 패턴. 오늘 이전까지 두 리전의
+  앱은 서로의 존재를 전혀 몰랐는데(코드 조사로 확인), 이게 그걸 깨는 최초의 지점이다.
+- **로컬 검증 완료**: `.venv/bin/python3 app.py`(LOCAL_MODE=true)로 `/infra`·`/api/regions` 목업
+  응답 확인, 이어서 `LOCAL_MODE=false` + 가짜 `REGIONS_JSON`(상대 리전을 존재하지 않는 로컬 포트로
+  지정)으로 실제 코드 경로까지 검증 — 자기 자신은 호출 없이 reachable, 상대는 실제 요청 실패 시
+  `reachable:false`로 정확히 표시되는 것, GSLB 확인 자체가 실패하면(이 개발 환경은 외부 인터넷
+  접근이 막혀 있어 실제로 실패함) `gslb_target: null`로 우아하게 저하하는 것까지 확인.
+- **아직 안 끝난 것**: `REGIONS_JSON`은 이 레포가 아니라 별도 `ChaosArena-manifests` 레포의
+  `argocd-managed-kr1/deployment.yaml`·`argocd-managed-kr2/deployment.yaml`에 최초 1회 수동으로
+  추가해야 하는 값이라, 실제 KR1/KR2 라이브 클러스터에서의 최종 검증(리전 하나를 진짜로 내려서
+  카드가 빨갛게 바뀌고 GSLB 배지가 뒤따라 넘어가는 것)은 사용자가 그 값을 반영한 뒤 진행 예정.
+- **변경 파일**: `app.py`(`REGIONS_JSON`/`GSLB_PUBLIC_URL` 설정, `_refresh_regions_loop` 백그라운드
+  스레드, `GET /api/regions`, `GET /infra`), `templates/infra.html`(신규), `templates/base.html`
+  (사이드바/모바일 내비게이션에 "인프라 지도" 탭 추가).
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -822,6 +862,9 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   21.6~21.7절, `docs/SETUP_GUIDE.md` Part 11). JCasC REGION 전파 실수, 동시 push 레이스,
   PAT 값 불일치, ArgoCD 웹훅 TLS 에러까지 4가지 장애물을 실제로 겪고 해결(4.34절). **최종적으로
   KR2 Jenkins를 완전히 내려놓은 상태에서 KR1이 혼자 빌드→서명→배포까지 끝내는 것을 실측 검증**
+- [x] **인프라 지도(/infra) 탭** — 양쪽 리전 상태 + GSLB 현재 트래픽 대상을 화면으로 관찰
+  (`docs/CONCEPTS.md` 22절, 4.35절). 코드/로컬 검증 완료, `ChaosArena-manifests`에
+  `REGIONS_JSON` 반영 후 라이브 최종 검증 대기 중
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

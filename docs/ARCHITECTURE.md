@@ -23,27 +23,39 @@ flowchart TB
     subgraph KR1 ["☸️ KR1 · 판교 (Active)"]
         Ingress1["Ingress-nginx"] --> Pods1["chaos-demo × 3 (Flask)<br/>+ HPA"]
         Pods1 <--> Redis1["Redis (기록실, KR1 전용)"]
+        Pods1 -.->|"/metrics 스크레이핑"| Prom1["Prometheus"]
+        Prom1 --> Alertmgr1["Alertmanager"]
+        Jenkins1["Jenkins (CI) · REGION=kr1"] -->|"이미지 push + 서명"| NCR
+        Jenkins1 -->|"argocd-managed-kr1 커밋"| ManifestsRepo
+        ArgoCD1["ArgoCD (CD)"] -->|"감시 + 반영"| Pods1
+        ArgoCD1 --> ManifestsRepo
     end
 
     subgraph KR2 ["☸️ KR2 · 평촌 (Standby)"]
         Ingress2["Ingress-nginx"] --> Pods2["chaos-demo × 3 (Flask)<br/>+ HPA"]
         Pods2 <--> Redis2["Redis (기록실, KR2 전용)"]
-        Pods2 -.->|"/metrics 스크레이핑"| Prom["Prometheus"]
-        Prom --> Alertmgr["Alertmanager"]
-        Jenkins["Jenkins (CI)"] -->|"이미지 push + 서명"| NCR["NCR"]
-        Jenkins -->|"커밋"| ManifestsRepo["GitHub: ChaosArena-manifests"]
-        ArgoCD["ArgoCD (CD)"] -->|"감시 + 반영"| Pods2
-        ArgoCD --> ManifestsRepo
+        Pods2 -.->|"/metrics 스크레이핑"| Prom2["Prometheus"]
+        Prom2 --> Alertmgr2["Alertmanager"]
+        Jenkins2["Jenkins (CI) · REGION=kr2"] -->|"이미지 push + 서명"| NCR["NCR"]
+        Jenkins2 -->|"argocd-managed-kr2 커밋"| ManifestsRepo["GitHub: ChaosArena-manifests"]
+        ArgoCD2["ArgoCD (CD)"] -->|"감시 + 반영"| Pods2
+        ArgoCD2 --> ManifestsRepo
     end
 
-    SourceRepo["GitHub: ChaosArena (소스)"] -->|"push → webhook"| Jenkins
-    Alertmgr -->|"알림"| Slack["💬 Slack"]
+    Pods1 -.->|"/health 직접 확인 (인프라 지도)"| Pods2
+    SourceRepo["GitHub: ChaosArena (소스)"] -->|"push → webhook (양쪽 각자)"| Jenkins1
+    SourceRepo -->|"push → webhook (양쪽 각자)"| Jenkins2
+    Alertmgr1 -->|"[KR1] 알림"| Slack["💬 Slack"]
+    Alertmgr2 -->|"[KR2] 알림"| Slack
 ```
 
-**왜 KR1엔 Jenkins/ArgoCD/Prometheus가 없는가**: HPA·Redis처럼 사용자 트래픽이 실제로 지나가는
-"서비스 경로" 컴포넌트는 두 리전에 대칭으로 있어야 하지만, Jenkins/ArgoCD/Prometheus는 운영자만 보는
-"컨트롤 플레인"이라 하나로 관리하는 게 일반적이다 — 자세한 기준은
-[`CONCEPTS.md` 21절](./CONCEPTS.md#21-서비스-경로-vs-컨트롤-플레인--왜-모든-기능을-양쪽-리전에-복제하지-않는가)
+**KR1에도 Jenkins/ArgoCD/Prometheus가 있는 이유**: 처음엔 HPA·Redis 같은 "서비스 경로" 컴포넌트만
+두 리전에 대칭으로 두고, Jenkins/ArgoCD/Prometheus 같은 "컨트롤 플레인"은 KR2 하나로 관리하려고
+했었다. 그런데 "그 컨트롤 플레인이 있는 리전 자체가 오래 죽으면, 반대쪽 리전은 서비스가 멀쩡해도
+새 코드를 배포할 방법이 없어진다"는 SPOF를 뒤늦게 발견해서, Jenkins/ArgoCD/모니터링 스택을
+KR1에도 통째로 복제했다 — 상태 없는 오케스트레이터라 복제해도 데이터가 갈라질 위험이 없기
+때문에 가능했던 선택이다. 자세한 판단 기준 갱신 과정은
+[`CONCEPTS.md` 21.6~21.7절](./CONCEPTS.md#216-그런데-다시-짚어보니--본점-시스템에도-spof가-있었다)
 참고.
 
 이 다이어그램은 클로드가 이전에 만들어준 인터랙티브 아키텍처 아티팩트와 같은 내용을 텍스트로
@@ -109,11 +121,14 @@ git push → GitHub 웹훅 → Jenkins(CI) → NCR(이미지 저장) → GitHub(
 → ArgoCD(CD)가 감지해서 클러스터에 반영 → 헬스체크 → (실패 시) 자동 롤백
 ```
 
-이게 가장 단계가 많은 흐름이다. `Jenkinsfile`의 5개 stage를 그대로 따라가 보면:
+이게 가장 단계가 많은 흐름이다. **KR1/KR2 양쪽 Jenkins가 완전히 독립적으로, 이 5단계를 동시에
+각자 밟는다** — 같은 `Jenkinsfile`을 공유하되, 각 컨트롤러에 심어둔 `env.REGION`(kr1/kr2) 값
+하나로 이미지 태그 접두어와 매니페스트 레포 경로(`argocd-managed-kr1`/`-kr2`)만 갈라진다. 아래는
+그중 한 리전 기준으로 따라가 본 것이다:
 
 1. **Checkout** — GitHub의 `ChaosArena` 레포(`infra/k8s-setup` 브랜치)에 push가 생기면, GitHub가
-   등록된 웹훅으로 Jenkins에 "방금 push 있었다"고 알린다. Jenkins는 그 즉시 빌드 전용 파드를 하나
-   띄워서(Kubernetes Cloud) 코드를 받아온다.
+   양쪽 리전에 각각 등록된 웹훅으로 두 Jenkins 모두에게 "방금 push 있었다"고 동시에 알린다.
+   Jenkins는 그 즉시 빌드 전용 파드를 하나 띄워서(Kubernetes Cloud) 코드를 받아온다.
 2. **Build & Push** — 그 파드 안 **Kaniko** 컨테이너가 `Dockerfile`로 이미지를 빌드해서 **NCR**(비공개
    레지스트리)에 `jenkins-<빌드번호>` 태그로 올린다. Docker 데몬 없이 빌드하는 이유는 워커 노드가
    containerd라 `docker.sock`이 없어서다.
@@ -135,7 +150,7 @@ git push → GitHub 웹훅 → Jenkins(CI) → NCR(이미지 저장) → GitHub(
      자체는 실패(FAILURE)로 표시된다.
 
 **더 알아보기**: `CONCEPTS.md` 11~13절(Jenkins 첫 구축), 16절(GitOps 전환), 17절(자동 롤백),
-18절(배포 히스토리) · `PROJECT_LOG.md` 4.14, 4.22, 4.25, 4.26절
+18절(배포 히스토리), 21.6~21.7절(컨트롤 플레인 이중화) · `PROJECT_LOG.md` 4.14, 4.22, 4.25, 4.26, 4.34절
 
 ---
 
@@ -179,7 +194,13 @@ GSLB 헬스체크 실패 감지 → 자동으로 Standby(KR2)의 IP로 응답 �
 에서 일어나는 자가치유다. "파드 레벨 자가치유"(시나리오 2)와 "리전 레벨 자가치유"(이 시나리오)가
 이 프로젝트의 핵심 메시지인 "여러 레벨에서 스스로 복구하는 시스템"을 완성한다.
 
-**더 알아보기**: `CONCEPTS.md` 8절 · `PROJECT_LOG.md` 4.15, 4.24절
+**이제는 이 과정을 화면에서도 볼 수 있다** — `/infra`(인프라 지도) 탭이 앱 백엔드에서 양쪽
+리전에 직접 `/health`를 확인해서 카드 색으로 보여주고, 공개 도메인(`www.chaosarena.cloud`)의
+`/api/status`를 따로 호출해 "GSLB가 지금 실제로 어디로 트래픽을 보내는지"도 별도 배지로 표시한다.
+리전 카드는 수 초 안에 빨갛게 바뀌지만 GSLB 배지는 TTL 때문에 30~80초 뒤에야 따라오는 그
+시차 자체가, 위 4번 항목에서 측정한 지연을 화면으로 보여준다.
+
+**더 알아보기**: `CONCEPTS.md` 8절, 22절(인프라 지도) · `PROJECT_LOG.md` 4.15, 4.24절
 
 ---
 
@@ -192,11 +213,12 @@ GSLB 헬스체크 실패 감지 → 자동으로 Standby(KR2)의 IP로 응답 �
 | chaos-demo (Flask) | 게임 대시보드 + 자가치유 대상 워크로드 | `app.py`, `k8s/deployment.yaml` — **KR1/KR2 양쪽 동일** |
 | HPA | CPU 기준 오토스케일링 | `k8s/hpa.yaml` — **KR1/KR2 양쪽 동일** |
 | Redis | 기록실(리더보드) 영속 저장 | `k8s/redis.yaml`, `k8s/redis-pv.yaml`(KR2)/`redis-pv-kr1.yaml`(KR1) — **리전마다 독립 인스턴스** |
-| Prometheus/Grafana/Alertmanager | 지표 수집 + 알림 | `k8s/servicemonitor.yaml`, `k8s/prometheusrule.yaml`, `k8s/alertmanager-slack-values.yaml` — **KR2 전용**(21절) |
-| Jenkins | CI(빌드+서명) | `Jenkinsfile`, `k8s/jenkins-values.yaml` — **KR2 전용**(21절) |
-| ArgoCD | CD(GitOps 반영) | `k8s/argocd-application.yaml` — **KR2 전용**(21절) |
+| Prometheus/Grafana/Alertmanager | 지표 수집 + 알림 | `k8s/servicemonitor.yaml`, `k8s/prometheusrule.yaml`, `k8s/alertmanager-slack-values(-kr1).yaml` — **KR1/KR2 양쪽 동일**(21.6절) |
+| Jenkins | CI(빌드+서명) | `Jenkinsfile`, `k8s/jenkins-values(-kr1).yaml` — **KR1/KR2 양쪽 동일, `env.REGION`으로 분기**(21.6절) |
+| ArgoCD | CD(GitOps 반영) | `k8s/argocd-application(-kr1).yaml` — **KR1/KR2 양쪽 동일, 각자 자기 폴더만 감시**(21.6절) |
 | NCR | 비공개 이미지 저장소 | Terraform 밖, 콘솔에서 생성 |
-| ChaosArena-manifests(별도 레포) | GitOps가 지켜보는 실제 배포 대상 | 별도 GitHub 레포 |
+| ChaosArena-manifests(별도 레포) | GitOps가 지켜보는 실제 배포 대상 | 별도 GitHub 레포, `argocd-managed-kr1/`·`-kr2/` 형제 폴더 |
+| 인프라 지도(`/infra`) | 양쪽 리전 상태 + GSLB 현재 대상을 화면으로 관찰 | `app.py`(`REGIONS_JSON`, `/api/regions`), `templates/infra.html` — 22절 |
 
 ---
 
@@ -210,3 +232,11 @@ Redis 도입 과정은 `PROJECT_LOG.md` 4.31절, `CONCEPTS.md` 20절에 자세�
 GSLB Active를 KR1로 되돌리면서 이 문서의 다이어그램·시나리오 5·컴포넌트 표를 갱신했다. KR1에도
 Redis/HPA를 새로 붙였지만 Jenkins/ArgoCD/Prometheus는 의도적으로 KR2에만 남겨뒀다 — 그 판단 기준은
 `CONCEPTS.md` 21절(서비스 경로 vs 컨트롤 플레인), 재구축 과정 자체는 `PROJECT_LOG.md` 4.33절 참고.
+
+**업데이트(컨트롤 플레인 이중화 + 인프라 지도)**: 바로 위 문단의 "Jenkins/ArgoCD/Prometheus는
+KR2에만"이라는 판단이 뒤집혔다 — 그 컨트롤 플레인이 있는 리전 자체가 오래 죽으면 반대쪽 리전도
+새 코드를 배포할 방법이 없어진다는 SPOF를 발견해서, KR1에도 통째로 복제했다(`CONCEPTS.md`
+21.6~21.7절, `PROJECT_LOG.md` 4.34절). 이어서 이 failover를 화면에서 직접 관찰할 수 있는
+`/infra`(인프라 지도) 탭을 추가했다(`CONCEPTS.md` 22절) — 앱이 처음으로 반대편 리전의 존재를
+아는 지점이라, 이 문서의 다이어그램에도 그 신규 연결(양쪽 Jenkins/ArgoCD, `/health` 상호 확인)을
+반영했다.

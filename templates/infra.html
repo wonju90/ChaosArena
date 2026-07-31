@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% block title %}인프라 지도 — ChaosArena{% endblock %}
+{% block page_title %}인프라 지도{% endblock %}
+{% block page_sub %}KR1(판교)/KR2(평촌) 리전 상태와 GSLB 트래픽 대상을 실시간으로 관찰합니다{% endblock %}
+
+{% block extra_style %}
+  .infra-callout {
+    padding: 13px 16px; border-radius: 12px;
+    background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.28);
+    color: #bcd6ea; font-size: 12.5px; line-height: 1.6;
+  }
+
+  /* GSLB 현재 트래픽 대상 스트립 */
+  .gslb-strip {
+    display: flex; align-items: center; justify-content: center; gap: 18px;
+    padding: 14px 18px;
+  }
+  .gslb-side {
+    display: flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: 999px;
+    font-size: 13px; font-weight: 700; color: #64748b; background: rgba(51,65,85,0.35);
+    transition: color 0.3s ease, background 0.3s ease;
+  }
+  .gslb-side.gslb-serving { color: #38bdf8; background: rgba(56,189,248,0.15); }
+  .gslb-side-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .gslb-side-dot.pulse { animation: gslb-pulse 1.6s ease-in-out infinite; }
+  @keyframes gslb-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .gslb-arrow { font-size: 18px; color: #475569; }
+
+  /* 리전 카드 */
+  .region-card {
+    border-radius: 14px; padding: 16px 18px; background: #0b1220;
+    border: 1.5px solid rgba(148,163,184,0.14);
+    transition: border-color 0.4s ease, background 0.4s ease, box-shadow 0.4s ease;
+  }
+  .region-card.region-up { border-color: rgba(34,197,94,0.30); }
+  .region-card.region-down { border-color: rgba(239,68,68,0.55); background: rgba(239,68,68,0.06); }
+  .region-card.region-serving { box-shadow: 0 0 0 2px rgba(56,189,248,0.35) inset; }
+  .region-card.flash-down { animation: region-flash-red 1.1s ease-out; }
+  @keyframes region-flash-red {
+    0% { background: rgba(239,68,68,0.35); } 100% { background: rgba(239,68,68,0.06); }
+  }
+
+  .region-dot { width: 16px; height: 16px; border-radius: 50%; background: #334155; transition: background 0.3s; flex: none; }
+  .region-dot-up { background: #22c55e; box-shadow: 0 0 10px rgba(34,197,94,0.55); }
+  .region-dot-down { background: #ef4444; box-shadow: 0 0 10px rgba(239,68,68,0.55); }
+
+  .region-head { display: flex; align-items: center; gap: 10px; }
+  .region-name { font-size: 15.5px; font-weight: 800; color: #e8eef7; }
+  .region-status-text { font-size: 12px; color: #8593a8; margin-left: auto; font-weight: 600; }
+
+  .region-row {
+    display: flex; align-items: center; gap: 10px; padding: 9px 10px; margin-top: 8px;
+    border-radius: 9px; background: rgba(255,255,255,0.02); border: 1px solid rgba(148,163,184,0.08);
+  }
+  .region-row-icon { font-size: 15px; flex: none; width: 20px; text-align: center; }
+  .region-row-label { font-size: 12.5px; font-weight: 700; color: #cdd7e6; }
+  .region-row-sub { font-size: 10.8px; color: #64748b; }
+
+  .infra-checked-at { font-size: 11px; color: #64748b; text-align: right; margin-top: 4px; }
+{% endblock %}
+
+{% block content %}
+{% set components = [
+  ('🔀', 'Ingress-nginx', '포트 번호 없이 접속'),
+  ('🎮', 'chaos-demo × 3', 'Self-Healing 대상 · HPA로 3 → 6'),
+  ('🗄️', 'Redis', '기록실(리더보드) · 리전 전용 인스턴스'),
+  ('📊', '모니터링 스택', 'Prometheus + Grafana + Alertmanager'),
+  ('🧰', 'Jenkins (CI)', '빌드 → 서명 → 매니페스트 커밋'),
+  ('🔄', 'ArgoCD (CD)', 'GitOps Pull-Sync · selfHeal'),
+] %}
+
+<div class="flex flex-col gap-4">
+
+  <div class="infra-callout">
+    💡 이 화면은 각 리전에 <b>직접 연결</b>해서 수 초 안에 확인한 결과예요. 반면 실제 사용자가
+    보는 GSLB DNS 전환은 TTL(30초) 때문에 <b>30~80초 정도 더 걸릴 수 있어요</b> — 아래 리전
+    카드가 먼저 빨갛게 바뀌고, 그 위 GSLB 배지는 조금 늦게 반대편으로 넘어가는 게 정상입니다.
+  </div>
+
+  <div class="panel">
+    <h2 class="panel-title">{{ ic.i('activity') }} GSLB 현재 트래픽 대상</h2>
+    <div class="gslb-strip">
+      <span id="gslb-kr1" class="gslb-side"><span class="gslb-side-dot"></span>KR1 · 판교</span>
+      <span class="gslb-arrow">⇄</span>
+      <span id="gslb-kr2" class="gslb-side"><span class="gslb-side-dot"></span>KR2 · 평촌</span>
+    </div>
+    <div id="gslb-hint" class="text-center text-[11px] text-faint">확인 중…</div>
+  </div>
+
+  <div class="grid gap-4 lg:grid-cols-2">
+    <div id="region-card-kr1" class="region-card">
+      <div class="region-head">
+        <span id="region-dot-kr1" class="region-dot"></span>
+        <span class="region-name">☸️ KR1 · 판교</span>
+        <span id="region-status-kr1" class="region-status-text">확인 중…</span>
+      </div>
+      {% for icon, label, sub in components %}
+      <div class="region-row">
+        <span class="region-row-icon">{{ icon }}</span>
+        <div>
+          <div class="region-row-label">{{ label }}</div>
+          <div class="region-row-sub">{{ sub }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div id="region-card-kr2" class="region-card">
+      <div class="region-head">
+        <span id="region-dot-kr2" class="region-dot"></span>
+        <span class="region-name">☸️ KR2 · 평촌</span>
+        <span id="region-status-kr2" class="region-status-text">확인 중…</span>
+      </div>
+      {% for icon, label, sub in components %}
+      <div class="region-row">
+        <span class="region-row-icon">{{ icon }}</span>
+        <div>
+          <div class="region-row-label">{{ label }}</div>
+          <div class="region-row-sub">{{ sub }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div id="infra-checked-at" class="infra-checked-at"></div>
+
+</div>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+// 폴링마다 반복 재생되지 않도록, 직전 상태와 비교해서 "바뀐 순간"에만 플래시를 재생한다
+// (cicd.html의 isFreshDeploy 판단과 같은 관용구).
+const infraLastReachable = { kr1: null, kr2: null };
+
+function renderRegionCard(id, reachable, isServing) {
+  const card = document.getElementById('region-card-' + id);
+  const dot = document.getElementById('region-dot-' + id);
+  const statusText = document.getElementById('region-status-' + id);
+
+  card.classList.toggle('region-up', reachable);
+  card.classList.toggle('region-down', !reachable);
+  card.classList.toggle('region-serving', isServing);
+  dot.className = 'region-dot ' + (reachable ? 'region-dot-up' : 'region-dot-down');
+  statusText.innerText = reachable ? '정상 응답' : '응답 없음';
+  statusText.style.color = reachable ? '#4ade80' : '#f87171';
+
+  const prev = infraLastReachable[id];
+  if (prev === true && reachable === false) {
+    card.classList.remove('flash-down');
+    void card.offsetWidth; // 리플로우 강제 -> 애니메이션 재시작 트릭
+    card.classList.add('flash-down');
+  }
+  infraLastReachable[id] = reachable;
+}
+
+function renderGslbStrip(gslbTarget) {
+  const kr1El = document.getElementById('gslb-kr1');
+  const kr2El = document.getElementById('gslb-kr2');
+  const hint = document.getElementById('gslb-hint');
+
+  kr1El.classList.toggle('gslb-serving', gslbTarget === 'kr1');
+  kr2El.classList.toggle('gslb-serving', gslbTarget === 'kr2');
+  kr1El.querySelector('.gslb-side-dot').classList.toggle('pulse', gslbTarget === 'kr1');
+  kr2El.querySelector('.gslb-side-dot').classList.toggle('pulse', gslbTarget === 'kr2');
+
+  if (gslbTarget === 'kr1') hint.innerText = '지금 실제 사용자 트래픽은 KR1(판교)로 갑니다';
+  else if (gslbTarget === 'kr2') hint.innerText = '지금 실제 사용자 트래픽은 KR2(평촌)로 갑니다';
+  else hint.innerText = '판정 중… (공개 도메인 응답을 아직 못 받았어요)';
+}
+
+async function refreshRegions() {
+  try {
+    const res = await fetch('/api/regions');
+    const data = await res.json();
+
+    if (!data.available) {
+      ['kr1', 'kr2'].forEach((id) => {
+        document.getElementById('region-status-' + id).innerText = 'REGIONS_JSON 미설정';
+        document.getElementById('region-status-' + id).style.color = '#8593a8';
+        document.getElementById('region-dot-' + id).className = 'region-dot';
+      });
+      document.getElementById('gslb-hint').innerText = '이 클러스터엔 아직 REGIONS_JSON이 설정되지 않았어요.';
+      return;
+    }
+
+    const byId = {};
+    (data.regions || []).forEach((r) => { byId[r.id] = r; });
+
+    if (byId.kr1) renderRegionCard('kr1', byId.kr1.reachable, data.gslb_target === 'kr1');
+    if (byId.kr2) renderRegionCard('kr2', byId.kr2.reachable, data.gslb_target === 'kr2');
+    renderGslbStrip(data.gslb_target);
+
+    if (data.checked_at) {
+      document.getElementById('infra-checked-at').innerText = '마지막 확인: ' + data.checked_at;
+    }
+  } catch (e) {
+    document.getElementById('gslb-hint').innerText = '⚠ 인프라 상태를 불러오지 못했습니다.';
+  }
+}
+
+setInterval(refreshRegions, 5000);
+refreshRegions();
+</script>
+{% endblock %}

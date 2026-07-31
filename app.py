@@ -60,6 +60,20 @@ SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 # 배포 버전 표시용 (Deployment에서 env로 주입하면 화면에 "v3" 같은 값이 뜬다)
 APP_VERSION = os.environ.get("APP_VERSION", "v1")
 
+# 인프라 지도(/infra) 탭용 — "이 세상에 리전이 몇 개 있고, 각자 공인 주소가 뭔지"를 담은 정적
+# 목록. KR1/KR2 양쪽 Deployment에 완전히 동일한 값을 심는다(APP_VERSION처럼 리전별로 다르게
+# 만드는 게 아니라, 대칭 설정값 하나를 공유하는 패턴). 형식:
+# '[{"id":"kr1","label":"판교","url":"http://<공인IP>"}, {"id":"kr2", ...}]'
+# 비어있으면(로컬 개발) 인프라 지도는 목업 데이터로 저하한다.
+try:
+    REGIONS = json.loads(os.environ.get("REGIONS_JSON", "[]"))
+except (json.JSONDecodeError, TypeError):
+    REGIONS = []
+
+# GSLB가 지금 실제로 어느 리전에 트래픽을 보내고 있는지는, 리전마다 다른 값이 아니라 이
+# 사이트의 공개 도메인 하나를 실제로 호출해서 확인한다 - 리전별 env가 아니라 상수인 이유.
+GSLB_PUBLIC_URL = "https://www.chaosarena.cloud"
+
 # Jenkins CI/CD가 배포 직후 `kubectl set env`로 채워주는 값들 (수동 배포/로컬에서는 빈 값).
 # 화면에서 "지금 몇 번째 빌드가 떠 있는지"를 보여주는 용도.
 BUILD_NUMBER = os.environ.get("BUILD_NUMBER", "")
@@ -490,6 +504,76 @@ def set_cpu_load(is_on):
 
 
 # ---------------------------------------------------------------------------
+# 7-1. 인프라 지도(/infra) — 상대 리전 상태를 백그라운드에서 미리 확인해두기
+# ---------------------------------------------------------------------------
+# 왜 요청이 올 때마다 확인하지 않는가: 리전 하나가 진짜로 죽어있는 그 순간(=이 기능이 보여주고
+# 싶은 바로 그 순간)에 매 폴링마다 새로 timeout을 기다리게 하면, 정작 보여주고 싶은 순간에
+# 화면이 굼떠진다. 그래서 상시로 도는 백그라운드 스레드(_cpu_burn과 같은 daemon thread 패턴)가
+# 5초마다 미리 확인해서 결과를 딕셔너리 하나로 새로 만들어 통째로 스왑해두고, API는 그 캐시를
+# 읽기만 한다(요청 스레드 안에서 네트워크 I/O를 하지 않음).
+
+_regions_cache = {"self": APP_VERSION, "gslb_target": None, "checked_at": None, "regions": []}
+
+
+def _check_region_reachable(url):
+    """상대 리전의 /health를 확인. 기존 query_prometheus_instant()와 동일한 try/except 관용구."""
+    try:
+        resp = requests.get(f"{url}/health", timeout=2)
+        return resp.status_code == 200
+    except requests.RequestException as e:
+        print(f"리전 상태 확인 실패({url}): {e}")
+        return False
+
+
+def _check_gslb_target():
+    """
+    GSLB가 지금 실제로 어느 리전에 트래픽을 보내는지는 추측하지 않고, 공개 도메인을 실제로
+    호출해서 확인한다 - 상대 리전이 안 닿는다고 "그럼 자기 자신이겠지"로 지레짐작하면, 이 기능의
+    존재 이유인 GSLB의 실제 TTL 지연(30~80초)을 화면에서 보여줄 수가 없다.
+    """
+    try:
+        resp = requests.get(f"{GSLB_PUBLIC_URL}/api/status", timeout=2)
+        return resp.json().get("version")
+    except (requests.RequestException, ValueError) as e:
+        print(f"GSLB 대상 확인 실패: {e}")
+        return None
+
+
+def _build_regions_snapshot():
+    region_results = []
+    for region in REGIONS:
+        is_self = region["id"] == APP_VERSION
+        reachable = True if is_self else _check_region_reachable(region["url"])
+        region_results.append(
+            {
+                "id": region["id"],
+                "label": region["label"],
+                "reachable": reachable,
+                "is_self": is_self,
+            }
+        )
+
+    return {
+        "self": APP_VERSION,
+        "gslb_target": _check_gslb_target(),
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "regions": region_results,
+    }
+
+
+def _refresh_regions_loop():
+    global _regions_cache
+    while True:
+        if REGIONS:
+            _regions_cache = _build_regions_snapshot()  # 새 dict 통째로 스왑 -> 원자적, Lock 불필요
+        time.sleep(5)
+
+
+if REGIONS and not LOCAL_MODE:
+    threading.Thread(target=_refresh_regions_loop, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
 # 8. 화면 / 기본 라우트
 # ---------------------------------------------------------------------------
 
@@ -524,6 +608,11 @@ def cicd_page():
         active_page="cicd",
         deploy_rank_thresholds=DEPLOY_RANK_THRESHOLDS,
     )
+
+
+@app.route("/infra")
+def infra_page():
+    return render_template("infra.html", version=APP_VERSION, active_page="infra")
 
 
 @app.route("/health")
@@ -657,6 +746,35 @@ def api_pods():
         for pod in pods
     ]
     return jsonify({"pods": pod_list})
+
+
+@app.route("/api/regions")
+def api_regions():
+    """
+    인프라 지도(/infra) 탭이 폴링하는 API. 실제 네트워크 호출은 이미 백그라운드 스레드
+    (_refresh_regions_loop)가 5초마다 미리 해뒀으므로, 여기서는 그 캐시를 그대로 반환한다.
+    REGIONS_JSON이 아직 설정 안 된 클러스터(예: 배포는 됐지만 매니페스트에 이 env를 아직 안
+    넣은 상태)에서는 다른 선택적 연동(Prometheus/HPA)과 같은 패턴으로 available:false를 반환한다
+    - LOCAL_MODE 목업과 헷갈리지 않도록, 가짜 "정상" 데이터로 우아하게 저하하지 않는다.
+    """
+    if LOCAL_MODE:
+        return jsonify(
+            {
+                "available": True,
+                "self": "kr1",
+                "gslb_target": "kr1",
+                "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "regions": [
+                    {"id": "kr1", "label": "판교", "reachable": True, "is_self": True},
+                    {"id": "kr2", "label": "평촌", "reachable": True, "is_self": False},
+                ],
+            }
+        )
+
+    if not REGIONS:
+        return jsonify({"available": False})
+
+    return jsonify({"available": True, **_regions_cache})
 
 
 @app.route("/api/deploy-history")

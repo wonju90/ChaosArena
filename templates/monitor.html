@@ -35,6 +35,10 @@
   .prom-badge-on { background: rgba(20,83,45,0.4); color: #4ade80; }
   .prom-badge-off { background: rgba(51,65,85,0.5); color: #94a3b8; }
   .prom-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  .hpa-bar-track { height: 8px; border-radius: 999px; background: rgba(148,163,184,0.15); overflow: hidden; }
+  .hpa-bar-fill { height: 100%; border-radius: 999px; background: #38bdf8; transition: width 0.4s ease, background 0.3s; }
+  .hpa-bar-fill.over-target { background: #fb923c; }
 {% endblock %}
 
 {% block content %}
@@ -71,6 +75,27 @@
     <div class="mt-3 flex flex-wrap items-center gap-2">
       <span class="text-[11px] uppercase tracking-wider text-faint">Phase</span>
       <div id="phase-chips" class="flex flex-wrap gap-2"></div>
+    </div>
+  </div>
+
+  <!-- 오토스케일링(HPA) -->
+  <div class="panel">
+    <div class="mb-3 flex items-center justify-between">
+      <h2 class="panel-title" style="margin:0;">{{ ic.i('trend-up') }} 오토스케일링 (HPA) <span class="text-faint normal-case tracking-normal">· CPU 기준</span></h2>
+      <span id="hpa-status-badge" class="prom-badge prom-badge-off"><span class="prom-badge-dot"></span>확인 중…</span>
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div class="ov-tile"><div class="ov-val text-ink" id="hpa-current">-</div><div class="ov-lab">현재 레플리카</div></div>
+      <div class="ov-tile"><div class="ov-val text-ink" id="hpa-desired">-</div><div class="ov-lab">목표 레플리카</div></div>
+      <div class="ov-tile"><div class="ov-val text-ink" id="hpa-min">-</div><div class="ov-lab">최소(min)</div></div>
+      <div class="ov-tile"><div class="ov-val text-ink" id="hpa-max">-</div><div class="ov-lab">최대(max)</div></div>
+    </div>
+    <div class="mt-3">
+      <div class="mb-1 flex items-center justify-between text-[11px] text-faint">
+        <span>CPU 사용률</span>
+        <span><b id="hpa-cpu-current" class="text-ink">-</b>% / 목표 <span id="hpa-cpu-target">-</span>%</span>
+      </div>
+      <div class="hpa-bar-track"><div id="hpa-bar-fill" class="hpa-bar-fill" style="width:0%"></div></div>
     </div>
   </div>
 
@@ -323,11 +348,50 @@ async function refreshClusterMetrics() {
   }
 }
 
+// 오토스케일링(HPA) 상태: 5초마다 갱신
+async function refreshHpa() {
+  const badge = document.getElementById('hpa-status-badge');
+  try {
+    const res = await fetch('/api/hpa');
+    const data = await res.json();
+    if (!data.available) {
+      badge.className = 'prom-badge prom-badge-off';
+      badge.innerHTML = '<span class="prom-badge-dot"></span>HPA 미설치';
+      ['hpa-current', 'hpa-desired', 'hpa-min', 'hpa-max'].forEach(
+        (id) => (document.getElementById(id).innerText = '-')
+      );
+      document.getElementById('hpa-cpu-current').innerText = '-';
+      document.getElementById('hpa-cpu-target').innerText = '-';
+      document.getElementById('hpa-bar-fill').style.width = '0%';
+      return;
+    }
+    badge.className = 'prom-badge prom-badge-on';
+    badge.innerHTML = '<span class="prom-badge-dot"></span>연동됨';
+    document.getElementById('hpa-current').innerText = data.current_replicas;
+    document.getElementById('hpa-desired').innerText = data.desired_replicas;
+    document.getElementById('hpa-min').innerText = data.min_replicas;
+    document.getElementById('hpa-max').innerText = data.max_replicas;
+
+    const cur = data.current_cpu_percent;
+    const tgt = data.target_cpu_percent;
+    document.getElementById('hpa-cpu-current').innerText = cur !== null ? cur : '-';
+    document.getElementById('hpa-cpu-target').innerText = tgt !== null ? tgt : '-';
+    const fill = document.getElementById('hpa-bar-fill');
+    fill.style.width = (cur !== null ? Math.min(cur, 100) : 0) + '%';
+    fill.classList.toggle('over-target', cur !== null && tgt !== null && cur >= tgt);
+  } catch (e) {
+    badge.className = 'prom-badge prom-badge-off';
+    badge.innerHTML = '<span class="prom-badge-dot"></span>조회 실패';
+  }
+}
+
 setInterval(refreshStatus, 2000);
 setInterval(refreshPods, 3000);
 setInterval(refreshClusterMetrics, 5000);
+setInterval(refreshHpa, 5000);
 refreshStatus();
 refreshPods();
+refreshHpa();
 refreshClusterMetrics();
 </script>
 {% endblock %}

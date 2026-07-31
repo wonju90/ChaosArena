@@ -1,0 +1,35 @@
+# -----------------------------------------------------------------------------
+# k8s/redis-pv.yaml과 완전히 같은 이유, 같은 방식이다 - KR1(판교) 전용 사본이다.
+# KR1도 KR2와 마찬가지로 StorageClass(자동 디스크 프로비저닝)가 없는 bare-metal kubeadm
+# 클러스터라, 워커 노드 1대의 로컬 디렉터리를 hostPath로 직접 지정하는 수동 PV가 필요하다.
+#
+# KR1은 Jenkins가 없는 클러스터라(CI/CD는 KR2에만 존재, docs/PROJECT_LOG.md 참고) 어느
+# 워커에 둬도 다른 컴포넌트와 충돌할 위험은 없다 - KR2와 이름 패턴만 맞춰 worker2를 쓴다.
+#
+# 사전 준비 (적용 전에 아래 노드에서 1회 실행):
+#   sudo mkdir -p /data/redis && sudo chown 999:999 /data/redis
+#
+# 아래 노드 이름(chaosarena-worker2-kr1)은 `kubectl get nodes`로 실제 존재하는지 먼저 확인할 것.
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: redis-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: redis-local
+  hostPath:
+    path: /data/redis
+    type: Directory
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - chaosarena-worker2-kr1

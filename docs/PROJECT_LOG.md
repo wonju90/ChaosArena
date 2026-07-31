@@ -565,6 +565,100 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **변경 파일**: `templates/base.html`/`cicd.html`/`game.html`/`records.html`/`monitor.html`(전부
   프론트엔드, 백엔드/인프라 변경 없음).
 
+### 4.31 기록실(리더보드) Redis 도입 — 실제 라이브 검증 완료
+- **배경**: 4.30절 UI 작업 도중, 사용자가 실제 화면에서 "빌드 #38 배포 직후 기록실이 0으로 리셋"되는
+  걸 직접 목격했다. 원인은 `records` dict(`app.py:107`)가 그 요청을 처리한 파드 프로세스의 메모리에만
+  있어서 — (1) CI/CD 자동 배포(코드와 무관한 문서 커밋 포함)가 파드를 롤링 교체할 때마다 초기화되고,
+  (2) replica 3개끼리 메모리를 공유하지 않아 sticky session 없이는 서로 다른 값을 보여준다는 것.
+- **결정**: Redis 도입. Postgres/SQLite 대신 Redis를 택한 이유, Helm 차트 대신 직접 작성한
+  StatefulSet+hostPath PV(Jenkins와 다른 워커 노드)를 택한 이유, `ZADD ... GT CH`로 동시성 레이스를
+  없앤 방법 등 설계 근거는 `docs/CONCEPTS.md` 20절 참고. `current_mission`/`chaos_state`/
+  `metrics_state`는 의도적으로 손대지 않음(스코프를 명확히 좁힘).
+- **구현**: `app.py`에 `get_redis_client()`(REDIS_HOST 비어있으면 None → in-memory로 저하) +
+  `_record_completion()`/`_fetch_records_snapshot()` 추가, `_complete_mission()`/`api_records()`/
+  `api_records_reset()`은 이 두 헬퍼만 호출하도록 재작성. `PROMETHEUS_URL`/`SLACK_WEBHOOK_URL`과
+  동일한 "선택적 외부 의존성 + 좁은 try/except + 로그 후 계속" 패턴을 그대로 따름. 새 파일
+  `k8s/redis-pv.yaml`/`k8s/redis.yaml`/`k8s/redis-secret.example.yaml`, `k8s/deployment.yaml`에
+  `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD` env 추가, `requirements.txt`에 `redis==5.0.8`.
+- **로컬 검증**: Homebrew `redis-server`를 띄워 (1) 미션 완료 → Redis에 정상 기록, (2) 앱 프로세스를
+  죽였다 재시작해도 기록 유지(재배포 시뮬레이션), (3) Redis를 꺼둔 상태에서도 앱이 500 없이 파드
+  메모리로 저하하며 미션도 정상 진행, (4) `REDIS_HOST` 아예 미설정 시 기존 로컬 개발 방식 그대로
+  회귀 없음, (5) 리셋 시 Redis 키까지 깨끗이 삭제 — 5가지 시나리오 전부 실측 확인.
+- **⚠️ 실제 롤아웃 중 발견한 문서 실수**: SETUP_GUIDE.md 10.5 초안이 "이 레포의 `k8s/deployment.yaml`을
+  복사해서 `ChaosArena-manifests`에 push"라고 안내했는데, 그대로 따르면 Jenkins가 관리하는 실제
+  이미지 태그/`BUILD_NUMBER`/`GIT_COMMIT`/`DEPLOY_DURATION_SECONDS`를 통째로 덮어써서 최신 빌드가
+  옛날 이미지로 롤백될 뻔했다. 사용자가 실제로 그 단계를 진행하며 화면을 공유해줘서 발견 →
+  "새 env 3줄만 손으로 추가, 나머지 필드는 그대로 둔다"는 방식으로 즉시 수정(9.8절과 같은 "파일
+  일부만 최초 1회 수동 반영" 패턴). 가이드 문서 자체도 실제로 한 줄씩 따라 해봐야 이런 실수를
+  잡아낼 수 있다는 사례.
+- **KR2 실제 클러스터 검증 완료**: `redis-secret`/`redis-pv`/`redis` StatefulSet 적용 →
+  `kubectl delete pod redis-0` 후에도 `smoke-test` 키가 살아있음을 확인(PV/RDB 정상). `redis-cli
+  keys "records:*"` 조회 결과 실제 미션 완료 후 `incidents`/`leaderboard`/`recovery_sum`/
+  `recent_history`/`current_combo`/`best_combo`/`leaderboard:seq` 7개 키 전부 정상 생성 확인.
+  **최종 확인**: 이 문제를 처음 발견했던 시나리오를 그대로 재현 — 문서 수정 커밋(`e0d487e`)을
+  push해 Jenkins→ArgoCD 자동 재배포(build #39→#40)를 유발한 뒤 `/api/records`를 다시 조회, 배포
+  전과 완전히 동일한 값(`total_incidents: 3`, `best_recovery_seconds: 1.2`, 리더보드 3건)이 유지되는
+  것을 확인 — 처음 이 작업을 시작하게 만든 그 버그가 실제로 해결됐음을 증명했다. (참고로 같은 응답의
+  `total_requests`/`avg_response_ms`는 이번에도 0으로 리셋됐는데, 이는 의도적으로 Redis로 안 옮긴
+  `metrics_state`이므로 예상된 동작이다.)
+
+### 4.32 대시보드에 오토스케일링(HPA) 패널 추가
+
+- **배경**: HPA(4.18절)가 실제로 3→6으로 스케일 아웃하는 건 파드 개수로 화면에서 확인할 수 있었지만,
+  "왜(CPU 몇 %인지)"는 `kubectl get hpa`로만 볼 수 있었다. 사용자가 "대시보드에서 육안으로 확인할 수
+  있는 기능이 있냐"고 물어서, 없다는 것과 트레이드오프를 설명한 뒤 추가 요청을 받아 구현.
+- **구현**: `k8s/rbac.yaml`에 `autoscaling/horizontalpodautoscalers` 리소스 하나(`chaos-demo`)만
+  `get` 권한 추가(배포 이력 ConfigMap과 동일한 최소 권한 패턴). `app.py`에 `AutoscalingV2Api` 클라이언트
+  + `/api/hpa` 엔드포인트 추가 — `PROMETHEUS_URL`과 같은 "선택적 연동 + 우아한 저하"(HPA 미설치
+  클러스터는 `available:false`) 패턴 재사용. `LOCAL_MODE`에서는 이미 있는 `chaos_state["cpu_load"]`
+  토글로 스케일 아웃을 흉내내는 목업 사용. `templates/monitor.html`에 현재/목표 레플리카, min/max,
+  CPU 사용률 바(목표 초과 시 주황색)를 보여주는 새 패널 추가, 5초 폴링.
+- **로컬 검증**: `LOCAL_MODE=true`로 CPU 부하 버튼 on/off 각각에 대해 `/api/hpa` 응답과 화면 렌더링
+  (막대 색상 전환 포함) 스크린샷으로 확인 완료.
+- **변경 파일**: `app.py`, `k8s/rbac.yaml`, `templates/monitor.html`.
+
+### 4.33 KR1(판교) RAM 쿼터 해결 → 정식 재구축 + 원래 설계대로 Active 전환 ⭐
+
+- **배경**: 4.24절에서 KR1이 최소 스펙(RAM 쿼터 부족)이라 KR2를 임시로 Active(우선순위 1)로 바꿔둔
+  채로 지금까지 운영해왔다. 공유 교육 계정의 KR1 RAM 쿼터가 풀려서, 원래 설계(3.3절, KR1 Active/KR2
+  Standby)대로 되돌리는 작업을 진행.
+- **Terraform 재구축**: `terraform.tfvars`의 `kr1_flavor_name`이 이미 `r2.c4m16`(정식 스펙)으로
+  미리 채워져 있었던 걸 발견 — 쿼터 부족으로 실제 적용만 안 됐던 상태. `terraform apply` 결과
+  `2 to add, 2 to change, 0 to destroy`(워커 2대 신규 + 마스터/워커3 flavor in-place 교체, KR2는
+  변경 없음)로, 우려했던 것보다 안전하게 완료됐다.
+- **예상 밖의 발견 — in-place resize라 기존 클러스터가 그대로 생존**: flavor 변경이 destroy 없이
+  in-place update로 처리돼서, 마스터와 워커3의 **OS 디스크(및 그 위의 kubeadm 클러스터 상태)가
+  그대로 유지**됐다. 즉 기존 최소 스펙 테스트 클러스터(마스터 init + Calico + ingress-nginx +
+  `chaos-demo` 1replica)가 리사이즈 후에도 살아있어서, Part 2(마스터 init/Calico)와 Part 8
+  (ingress-nginx)를 처음부터 다시 할 필요가 없었다 — 새로 만들어진 워커 2대만 `kubeadm join`으로
+  기존 클러스터에 합류시키는 것으로 충분했다. terraform plan 단계에서 "0 to destroy"를 미리 확인해둔
+  덕분에 이 가능성을 예측하고 불필요한 재작업을 피할 수 있었다.
+- **트러블슈팅 — join 명령 복붙 실수**: 터미널에서 줄바꿈된 `kubeadm join <주소>:6443 --token ...
+  --discovery-token-ca-cert-hash sha256:...` 명령을 복사할 때 해시값만 잘려서 붙여넣어져
+  `discovery.bootstrapToken.token: Invalid value: ""` 류의 에러 발생. 원인은 단순 복붙 실수였고,
+  전체 명령을 한 줄로 다시 붙여넣어 해결.
+- **트러블슈팅 — PV가 `Terminating`에서 안 지워짐**: `redis-pv-kr1.yaml`(아래 항목)의 `nodeAffinity`
+  값을 잘못 적용해서(파일이 아직 git에 없어 `git pull`로 못 받았는데 그 사실을 모른 채 구버전 파일로
+  적용) `kubectl delete pv`를 했더니 `Terminating`에서 멈췄다. 원인은 `data-redis-0` PVC가 여전히
+  그 PV를 참조하고 있어서 `kubernetes.io/pv-protection` finalizer가 삭제를 막고 있었던 것 — StatefulSet
+  → PVC → PV 순서로 먼저 지우니 정상적으로 정리됐다(finalizer 강제 제거는 필요 없었음).
+- **KR1 전용 Redis 신규 설치**: `k8s/redis-pv-kr1.yaml`(신규, KR2 버전과 동일 패턴이나
+  `chaosarena-worker2-kr1`에 고정) + 기존 `redis.yaml`/`redis-secret.example.yaml`을 KR1용 값으로
+  복사해 적용. KR1은 Jenkins가 없는 클러스터라(CI/CD는 KR2 전용) 어느 워커에 둬도 다른 컴포넌트와
+  충돌할 위험이 없다. `deployment.yaml`의 `REDIS_HOST`가 클러스터 내부 DNS(`redis.default.svc.cluster.local`)
+  라서 코드 변경 없이 "각자 자기 리전의 Redis"에 자동으로 연결됐다.
+- **트레이드오프 — 리전별 리더보드 분리**: KR1/KR2가 각자 독립된 Redis를 쓰므로, 두 리전 다 살아있는
+  상태에서 GSLB DNS 캐시가 아직 안정되지 않은 짧은 구간(failover 테스트 직후)에는 어느 리전에 붙느냐에
+  따라 기록 수·최고기록이 다르게 보이는 게 관찰됨. 이건 버그가 아니라 "리전마다 독립된 상태"를 선택한
+  설계의 자연스러운 결과 — Active/Standby 구조상 평소엔 한쪽만 트래픽을 받으므로 실사용에는 영향 없음.
+- **최종 검증**: chaos-demo 파드 강제 삭제 후에도 `/records`의 `total_incidents`가 유지되는 것으로
+  KR1 Redis 영속성 확인. GSLB Pool 우선순위를 `kr1-active`=1/`kr2-standby`=2로 원복(4.24절 이전 상태로
+  복귀) 후, `scripts/06-test-gslb-failover.sh`로 양방향 재검증: KR1 강제 다운 → 약 67초 후
+  `FAILOVER 감지: kr1 → kr2`, KR1 복구 → `FAILOVER 감지: kr2 → kr1`(failback)까지 실측 확인.
+- **변경 파일**: `k8s/redis-pv-kr1.yaml`(신규), `terraform.tfvars`(값은 이미 있었음, 변경 없음),
+  KR1 클러스터 쪽 리소스(Deployment/Redis/RBAC/secret)는 매니페스트 레포가 아니라 마스터에서 직접
+  `kubectl apply`(KR1은 GitOps 대상이 아님, CI/CD는 KR2 전용).
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -598,7 +692,11 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   프로바이더 소스 코드까지 확인해 근본 원인을 확정하고 `compute.tf`에서 중복 `image_id` 지정을 제거해 해결.
   수정 후 `terraform plan` 결과 `2 to add, 0 to change, 0 to destroy`만 남아 **일반 apply가 다시 안전해짐**
   (남은 "2 to add"는 KR1 RAM 쿼터 문제로 아래 항목이 해결되기 전까진 그대로 둘 것) (4.17절)
-- [ ] KR1(판교) RAM 쿼터 확보 → `r2.c4m16`·워커 3대로 정식 재구축 → `deployment-kr1-test.yaml` → `deployment.yaml`(APP_VERSION=kr1) 전환
+- [x] **KR1(판교) RAM 쿼터 확보 → 정식 재구축 + 원래 설계대로 Active 전환** ⭐ — `r2.c4m16`·워커 3대로
+  재구축(기존 마스터/워커는 in-place resize라 클러스터 상태 보존, 신규 워커 2대만 조인).
+  `deployment-kr1-test.yaml`(replicas=1) → `deployment.yaml`(replicas=3, APP_VERSION=kr1) 전환.
+  KR1 전용 Redis 신규 설치 + 재시작 생존 검증. GSLB 우선순위를 `kr1-active`=1로 원복하고
+  failover(kr1→kr2)/failback(kr2→kr1) 양방향 재검증 완료 (4.33절)
 - [x] **DNS Plus GSLB failover 구성 + 검증 완료** ⭐ — Zone 생성 → 가비아 네임서버를 NHN으로 위임 → Pool(`kr1-active` 우선순위1/`kr2-standby` 우선순위2) + 헬스체크(`/health`) → GSLB(FAILOVER, TTL 30초) 생성 후 Pool 연결 → `www` CNAME을 GSLB 도메인으로 연결. `scripts/06`으로 KR1 파드를 강제로 내려 실제 failover(약 80초 소요, `kr1-test`→`kr2`)와 복구 후 failback을 둘 다 실측 검증 (4.15절)
 - [x] **GSLB 우선순위 재조정** — 풀 스펙 클러스터인 KR2를 우선순위 1(Active)로, 최소 스펙 테스트
   클러스터인 KR1을 우선순위 2(Standby)로 변경. `dig +short www.chaosarena.cloud`가 KR2 공인IP를
@@ -657,6 +755,12 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - [x] **대시보드 UI 일관성 개선** — footer 태그라인 제거, 색상 accent 규칙 통일, 페이지 간 크로스링크로
   빈 여백 채우기, 유사한 페이지끼리 그리드 구조 통일(4.30절). Jenkins 파드 CrashLoopBackOff 재발(4.28절)
   및 GitHub 웹훅 배포 실패(4.29절)도 이 기간에 겪고 해결
+- [x] **기록실(리더보드) Redis 도입** ⭐ — 파드 재시작(모든 CI/CD 자동 배포 포함)마다 리더보드가
+  지워지고 replica 3개끼리 값이 다르던 문제를 실제 화면에서 목격 → Redis(hostPath PV, Jenkins와
+  다른 워커 노드) 도입으로 해결. 로컬 5가지 시나리오 + KR2 실제 클러스터(파드 삭제 후 데이터 보존,
+  실제 CI/CD 재배포 후 리더보드 유지)까지 전부 실측 검증 완료(4.31절)
+- [x] **대시보드 오토스케일링(HPA) 패널** — 최소 권한(HPA 1개 `get`)으로 현재/목표 레플리카, min/max,
+  CPU 사용률을 `/monitor`에서 kubectl 없이 육안 확인 가능(4.32절)
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---

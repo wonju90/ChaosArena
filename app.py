@@ -239,9 +239,8 @@ def query_prometheus_instant(promql):
 # 4. 쿠버네티스 API 헬퍼 함수 (LOCAL_MODE가 false일 때만 실제로 쓰인다)
 # ---------------------------------------------------------------------------
 
-def get_k8s_client():
+def ensure_k8s_config():
     """
-    쿠버네티스 API와 통신할 클라이언트를 만든다.
     - 파드 "안에서" 실행 중이면 in-cluster 설정(서비스어카운트 토큰 자동 사용)을 쓴다.
     - 그게 실패하면(예: 노트북에서 kubeconfig로 원격 클러스터를 테스트하는 경우) ~/.kube/config를 대신 사용한다.
     """
@@ -249,7 +248,18 @@ def get_k8s_client():
         config.load_incluster_config()
     except config.ConfigException:
         config.load_kube_config()
+
+
+def get_k8s_client():
+    """쿠버네티스 API와 통신할 CoreV1Api(파드/컨피그맵 등) 클라이언트를 만든다."""
+    ensure_k8s_config()
     return client.CoreV1Api()
+
+
+def get_autoscaling_client():
+    """HPA(HorizontalPodAutoscaler) 조회 전용 AutoscalingV2Api 클라이언트."""
+    ensure_k8s_config()
+    return client.AutoscalingV2Api()
 
 
 def get_chaos_pods(v1):
@@ -282,6 +292,64 @@ def get_deploy_history_events(v1):
         except ValueError:
             continue
     return events
+
+
+HPA_NAME = "chaos-demo"
+
+
+def get_hpa_status(autoscaling_v2):
+    """
+    chaos-demo Deployment에 걸린 HPA(k8s/hpa.yaml)의 현재 상태를 읽어온다.
+    monitor.html의 "오토스케일링" 패널이 `kubectl get hpa` 없이도 같은 값을 보여줄 수 있게 한다.
+    """
+    hpa = autoscaling_v2.read_namespaced_horizontal_pod_autoscaler(
+        name=HPA_NAME, namespace=NAMESPACE
+    )
+
+    current_cpu = None
+    for m in hpa.status.current_metrics or []:
+        if m.type == "Resource" and m.resource.name == "cpu":
+            current_cpu = m.resource.current.average_utilization
+            break
+
+    target_cpu = None
+    for m in hpa.spec.metrics:
+        if m.type == "Resource" and m.resource.name == "cpu":
+            target_cpu = m.resource.target.average_utilization
+            break
+
+    return {
+        "min_replicas": hpa.spec.min_replicas,
+        "max_replicas": hpa.spec.max_replicas,
+        "current_replicas": hpa.status.current_replicas,
+        "desired_replicas": hpa.status.desired_replicas,
+        "current_cpu_percent": current_cpu,
+        "target_cpu_percent": target_cpu,
+    }
+
+
+def build_mock_hpa():
+    """
+    LOCAL_MODE용 가짜 HPA 상태. 실제 metrics-server 없이도 CPU 부하 버튼과 연동해서
+    화면을 확인할 수 있게, chaos_state["cpu_load"] 켜짐 여부로 스케일 아웃된 것처럼 흉내낸다.
+    """
+    if chaos_state["cpu_load"]:
+        return {
+            "min_replicas": 3,
+            "max_replicas": 6,
+            "current_replicas": 6,
+            "desired_replicas": 6,
+            "current_cpu_percent": 88,
+            "target_cpu_percent": 50,
+        }
+    return {
+        "min_replicas": 3,
+        "max_replicas": 6,
+        "current_replicas": 3,
+        "desired_replicas": 3,
+        "current_cpu_percent": 9,
+        "target_cpu_percent": 50,
+    }
 
 
 def describe_k8s_error(e):
@@ -547,6 +615,25 @@ def api_metrics_cluster():
             "cluster_avg_response_ms": round(avg_ms, 1) if avg_ms is not None else None,
         }
     )
+
+
+@app.route("/api/hpa")
+def api_hpa():
+    """
+    오토스케일링(HPA) 상태 — monitor.html의 "오토스케일링" 패널이 이 값을 그대로 보여준다.
+    HPA가 아직 없는 클러스터(KR1 등)에서는 read 호출이 404로 실패하는데, 이것도 다른
+    선택적 연동(Prometheus 등)과 똑같이 available:false로 우아하게 처리한다.
+    """
+    if LOCAL_MODE:
+        return jsonify({"available": True, **build_mock_hpa()})
+
+    try:
+        v2 = get_autoscaling_client()
+        status = get_hpa_status(v2)
+    except (ApiException, config.ConfigException) as e:
+        return jsonify({"available": False, "error": f"쿠버네티스 API 호출 실패: {describe_k8s_error(e)}"})
+
+    return jsonify({"available": True, **status})
 
 
 @app.route("/api/pods")

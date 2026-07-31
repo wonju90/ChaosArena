@@ -9,12 +9,19 @@
 #   컨트롤러 파드도 반드시 같은 노드에 뜨도록 고정(안 그러면 PV를 못 찾음).
 # - serviceType: NodePort — MetalLB 없이 워커 공인IP:포트로 바로 접속(기존 chaos-demo와 동일 패턴).
 # - installPlugins: GitHub Webhook 트리거 + Kubernetes 에이전트 파드 스폰에 필요한 플러그인 명시.
+# - containerEnv REGION: Jenkinsfile이 "지금 어느 리전에서 도는 파이프라인인지"를 구분하는 유일한
+#   값. KR1에도 같은 Jenkinsfile을 그대로 쓰는 독립된 Jenkins를 하나 더 두면서(컨트롤 플레인 이중화,
+#   docs/PROJECT_LOG.md 참고), 매니페스트 레포 경로(argocd-managed-${REGION})와 이미지 태그
+#   접두어(${REGION}-jenkins-N)를 이 값 하나로 분기한다.
 # -----------------------------------------------------------------------------
 controller:
   serviceType: NodePort
   nodePort: 30880
   nodeSelector:
     kubernetes.io/hostname: chaosarena-worker1-kr2
+  containerEnv:
+    - name: REGION
+      value: kr2
   resources:
     requests:
       cpu: "200m"

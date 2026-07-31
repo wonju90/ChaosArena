@@ -31,6 +31,10 @@ rules:
     resources: ["configmaps"]
     resourceNames: ["chaos-deploy-history"]   # 이 ConfigMap 하나만 읽게 제한 (최소 권한)
     verbs: ["get"]   # CI/CD 탭의 배포 히스토리 타임라인 — 쓰기는 Jenkins가 Git 커밋으로만 한다
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    resourceNames: ["chaos-demo"]   # 이 HPA 하나만 읽게 제한 (최소 권한)
+    verbs: ["get"]   # 모니터링 대시보드의 "오토스케일링(HPA)" 패널이 kubectl get hpa 대신 이걸 씀
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1

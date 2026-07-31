@@ -72,7 +72,7 @@ except (json.JSONDecodeError, TypeError):
 
 # GSLB가 지금 실제로 어느 리전에 트래픽을 보내고 있는지는, 리전마다 다른 값이 아니라 이
 # 사이트의 공개 도메인 하나를 실제로 호출해서 확인한다 - 리전별 env가 아니라 상수인 이유.
-GSLB_PUBLIC_URL = "https://www.chaosarena.cloud"
+GSLB_PUBLIC_URL = "http://www.chaosarena.cloud"
 
 # Jenkins CI/CD가 배포 직후 `kubectl set env`로 채워주는 값들 (수동 배포/로컬에서는 빈 값).
 # 화면에서 "지금 몇 번째 빌드가 떠 있는지"를 보여주는 용도.

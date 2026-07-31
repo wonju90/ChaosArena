@@ -16,7 +16,7 @@
 
 ```mermaid
 flowchart TB
-    User["🖥️ 사용자 브라우저"] -->|"HTTPS www.chaosarena.cloud"| GSLB["🧭 GSLB (DNS Plus)<br/>FAILOVER · TTL 30s"]
+    User["🖥️ 사용자 브라우저"] -->|"HTTP www.chaosarena.cloud (TLS 미착수)"| GSLB["🧭 GSLB (DNS Plus)<br/>FAILOVER · TTL 30s"]
     GSLB -->|"우선순위 1 · Active"| KR1
     GSLB -->|"우선순위 2 · Standby"| KR2
 

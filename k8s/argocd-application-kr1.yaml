@@ -1,11 +1,10 @@
 # k8s/argocd-application.yaml(KR2)의 KR1 전용 사본. 컨트롤 플레인 이중화(각 리전이 독립된
 # Jenkins/ArgoCD/모니터링 스택을 갖게 됨, docs/PROJECT_LOG.md 참고)의 일환으로 KR1에도 설치한다.
 #
-# ⚠️ KR2와 다르게 syncPolicy.automated를 일부러 뺐다 — 최초 적용 때는 수동으로
-# `argocd app sync chaos-demo`를 실행해서 ArgoCD가 보여주는 diff가 KR1의 실제 라이브 상태와
-# 정확히 일치하는지 눈으로 먼저 확인한 다음에, 문제없으면 automated(prune+selfHeal)를 patch로
-# 추가한다(9.8절/PROJECT_LOG.md의 최초 부트스트랩 패턴과 동일한 이유 — 매니페스트를 손으로 미리
-# 맞춰서 추측하는 것보다 ArgoCD의 실제 diff를 보고 확정하는 게 실수 여지가 적음).
+# 최초 적용 때는 syncPolicy.automated 없이 적용 → `argocd app sync chaos-demo`로 수동
+# 동기화하고 diff를 눈으로 확인(KR1의 실제 라이브 상태와 tracking-id 라벨 추가 외엔 차이 없음을
+# 확인함) → 문제없어서 아래처럼 automated(prune+selfHeal)를 patch로 추가해 KR2와 동일한 자동
+# 모드로 전환 완료.
 #
 # 적용 방법: kubectl apply -f k8s/argocd-application-kr1.yaml -n argocd
 apiVersion: argoproj.io/v1alpha1
@@ -26,11 +25,9 @@ spec:
     server: https://kubernetes.default.svc
     namespace: default
 
-  # syncPolicy를 아예 생략 — 자동 동기화 없이, `argocd app sync`로 수동 동기화하고 diff를
-  # 확인한 뒤에만 아래 블록을 patch로 추가한다:
-  #   syncPolicy:
-  #     automated:
-  #       prune: true
-  #       selfHeal: true
-  #     syncOptions:
-  #       - CreateNamespace=false
+  syncPolicy:
+    automated:
+      prune: true # Git에서 리소스가 삭제되면 클러스터에서도 삭제
+      selfHeal: true # 누가 kubectl로 클러스터를 직접 바꿔도 Git 상태로 자동 되돌림
+    syncOptions:
+      - CreateNamespace=false # default 네임스페이스는 이미 존재

@@ -42,5 +42,7 @@ alertmanager:
           - api_url_file: /etc/alertmanager/secrets/slack-webhook/url
             channel: "#chaosarena-전체"
             send_resolved: true
-            title: "{{ .CommonLabels.alertname }}"
+            # KR1에도 같은 스택이 생기면서(컨트롤 플레인 이중화), 같은 채널로 알림이 섞여 들어오니
+            # 제목 접두어로 어느 리전 알림인지 구분한다(k8s/alertmanager-slack-values-kr1.yaml 참고).
+            title: "[KR2] {{ .CommonLabels.alertname }}"
             text: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"

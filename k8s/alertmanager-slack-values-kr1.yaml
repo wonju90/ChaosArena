@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# k8s/alertmanager-slack-values.yaml(KR2)의 KR1 전용 사본. 컨트롤 플레인 이중화(각 리전이
+# 독립된 Jenkins/ArgoCD/모니터링 스택을 갖게 됨, docs/PROJECT_LOG.md 참고)의 일환으로 KR1에도
+# kube-prometheus-stack을 새로 설치하면서 함께 만든다.
+#
+# 새 Slack 채널/웹훅을 따로 만들지 않고 KR2와 같은 slack-webhook Secret(같은 URL)을 재사용한다 —
+# 대신 제목 접두어(title)로 어느 리전의 알림인지만 구분한다. 채널을 완전히 분리하고 싶으면 나중에
+# 별도 Incoming Webhook을 만들어 이 파일의 api_url_file 대상 Secret만 바꾸면 된다.
+#
+# 적용 방법(KR2와 동일한 함정 — --reuse-values 쓰지 말 것, PROJECT_LOG.md 4.12절):
+#   helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring \
+#     --set grafana.service.type=NodePort --set grafana.service.nodePort=30030 \
+#     --set prometheus.service.type=NodePort --set prometheus.service.nodePorts.http=30090 \
+#     -f k8s/alertmanager-slack-values-kr1.yaml
+# ---------------------------------------------------------------------------
+alertmanager:
+  alertmanagerSpec:
+    secrets:
+      - slack-webhook
+
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: slack-notifications
+      group_by: ["alertname"]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      routes:
+        - receiver: "null"
+          matchers:
+            - alertname = "Watchdog"
+    receivers:
+      - name: "null"
+      - name: slack-notifications
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/slack-webhook/url
+            channel: "#chaosarena-전체"
+            send_resolved: true
+            title: "[KR1] {{ .CommonLabels.alertname }}"
+            text: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"

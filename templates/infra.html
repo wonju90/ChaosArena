@@ -33,12 +33,14 @@
   /* GSLB에서 두 리전으로 갈라지는 짧은 세로 커넥터 */
   .flow-branch { width: 2px; height: 18px; background: #2b3a52; margin: 0 auto; }
 
-  /* ── 리전 레인 (하나의 흐름 안에서 판교/평촌을 세로로 쌓음) ── */
-  .lane-list { display: flex; flex-direction: column; gap: 12px; }
+  /* ── 리전 레인 (판교/평촌을 좌우 2열로 나란히 — 한눈에 대칭으로 보이게) ── */
+  .lane-list { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 1100px) { .lane-list { grid-template-columns: 1fr 1fr; } }
   .region-lane {
     border-radius: 14px; padding: 13px 15px; background: #0b1220;
     border: 1.5px solid rgba(148,163,184,0.14);
     transition: border-color 0.4s ease, background 0.4s ease, box-shadow 0.4s ease;
+    min-width: 0;  /* 그리드 셀 안에서 넓은 트리가 셀을 넘겨 늘리지 않고, 레인 내부에서 가로 스크롤되게 */
   }
   .region-lane.lane-up { border-color: rgba(34,197,94,0.28); }
   .region-lane.lane-down { border-color: rgba(239,68,68,0.55); background: rgba(239,68,68,0.06); }
@@ -64,14 +66,13 @@
   .lane-status.ok { color: #4ade80; }
   .lane-status.bad { color: #f87171; }
 
-  /* ── 서비스 경로: Ingress → deploy → rs → pods (ArgoCD Application Tree식) ── */
-  .apptree-scroll { overflow-x: auto; padding: 6px 4px 2px; }
-  .apptree { display: flex; flex-direction: row; align-items: center; gap: 34px; min-width: max-content; }
-  .tier { display: flex; flex-direction: column; justify-content: center; gap: 12px; position: relative; }
+  /* ── 서비스 경로: Ingress → deploy → rs (가로 흐름), 그 아래 파드 그리드 ── */
+  .svc-flow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .flow-arrow { color: #475569; font-size: 16px; flex: none; }
 
   .tnode {
     position: relative; border-radius: 11px; padding: 10px 13px; background: #0e1626;
-    border: 1.5px solid rgba(148,163,184,0.16); min-width: 172px;
+    border: 1.5px solid rgba(148,163,184,0.16); min-width: 150px;
     transition: border-color 0.35s ease, box-shadow 0.35s ease, opacity 0.4s ease, transform 0.4s ease;
   }
   .tnode-head { display: flex; align-items: center; gap: 8px; }
@@ -95,29 +96,19 @@
 
   .tnode.node-ingress { border-color: rgba(148,163,184,0.22); }
   .tnode.node-deploy { border-color: rgba(56,189,248,0.35); }
-  .tnode.node-pod { min-width: 210px; }
+  .tnode.node-pod { min-width: 0; }
   .tnode.tpod-new { animation: tpod-in 0.55s ease-out; }
   @keyframes tpod-in {
-    0% { opacity: 0; transform: translateX(-10px) scale(0.94); border-color: rgba(34,197,94,0.9); }
+    0% { opacity: 0; transform: translateY(-8px) scale(0.94); border-color: rgba(34,197,94,0.9); }
     100% { opacity: 1; transform: none; }
   }
 
-  /* 커넥터 라인 */
-  .tier-deploy > .tnode::before,
-  .tier-rs > .tnode::before {
-    content: ''; position: absolute; left: -34px; top: 50%; width: 34px; height: 2px; background: #2b3a52;
+  /* ReplicaSet 아래 파드 그리드 — 좁은 반쪽 폭에서도 모든 파드가 한눈에 보이도록 감싼다 */
+  .pod-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(198px, 1fr)); gap: 10px;
+    margin-top: 14px; padding-top: 12px; border-top: 1px dashed rgba(148,163,184,0.12);
   }
-  .tier-rs > .tnode::after {
-    content: ''; position: absolute; right: -17px; top: 50%; width: 17px; height: 2px; background: #2b3a52;
-  }
-  .tier-pods { position: relative; }
-  .tier-pods::before {
-    content: ''; position: absolute; left: -17px; top: 26px; bottom: 26px; width: 2px; background: #2b3a52;
-  }
-  .tier-pods.single-pod::before { display: none; }
-  .tier-pods > .tnode::before {
-    content: ''; position: absolute; left: -17px; top: 50%; width: 17px; height: 2px; background: #2b3a52;
-  }
+  .pod-grid-label { font-size: 11px; font-weight: 700; color: #64748b; margin: 14px 0 -4px; }
 
   /* ── 리전 부속 컴포넌트 (Redis / 모니터링 / CI·CD) ── */
   .lane-aux { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 11px; border-top: 1px dashed rgba(148,163,184,0.14); }
@@ -222,19 +213,18 @@ function podNode(pod, regionId) {
     </div>`;
 }
 
-// Ingress → deploy → rs → pods 한 줄 흐름
+// Ingress → deploy → rs 가로 흐름 + 그 아래 파드 그리드
 function serviceFlow(r) {
   const d = r.topo.deployment;
   const rss = r.topo.replicasets || [];
   const pods = rss.flatMap((rs) => rs.pods);
+  const arrow = '<span class="flow-arrow">→</span>';
 
-  const ingressHtml = `
-    <div class="tier tier-ingress">
-      <div class="tnode node-ingress">
-        <div class="tnode-head"><span class="tnode-dot ok"></span><span class="tnode-kind">svc</span></div>
-        <div class="tnode-title" style="margin-top:6px">Ingress-nginx</div>
-        <div class="tnode-meta"><span class="tnode-chip">포트 번호 없이 접속</span></div>
-      </div>
+  const ingressNode = `
+    <div class="tnode node-ingress">
+      <div class="tnode-head"><span class="tnode-dot ok"></span><span class="tnode-kind">svc</span></div>
+      <div class="tnode-title" style="margin-top:6px">Ingress-nginx</div>
+      <div class="tnode-meta"><span class="tnode-chip">포트 번호 없이 접속</span></div>
     </div>`;
 
   const deployChips = [`목표 ${d.desired} · 현재 ${d.current}`];
@@ -244,42 +234,37 @@ function serviceFlow(r) {
       deployChips.push(`<span class="tnode-chip chip-cpu">CPU ${d.cpu_percent}% / ${d.target_cpu_percent}%</span>`);
     }
   }
-  const deployHtml = `
-    <div class="tier tier-deploy">
-      <div class="tnode node-deploy">
-        <div class="tnode-head">
-          <span class="tnode-dot ${d.current >= d.desired ? 'ok' : 'warn'}"></span>
-          <span class="tnode-kind">deploy</span>
-          <span class="tnode-title" style="font-size:13px">${esc(d.name)}</span>
-        </div>
-        <div class="tnode-meta">
-          ${deployChips.map((c) => (c.startsWith('<') ? c : `<span class="tnode-chip">${c}</span>`)).join('')}
-        </div>
+  const deployNode = `
+    <div class="tnode node-deploy">
+      <div class="tnode-head">
+        <span class="tnode-dot ${d.current >= d.desired ? 'ok' : 'warn'}"></span>
+        <span class="tnode-kind">deploy</span>
+        <span class="tnode-title" style="font-size:13px">${esc(d.name)}</span>
+      </div>
+      <div class="tnode-meta">
+        ${deployChips.map((c) => (c.startsWith('<') ? c : `<span class="tnode-chip">${c}</span>`)).join('')}
       </div>
     </div>`;
 
-  const rsHtml = `
-    <div class="tier tier-rs">
-      ${rss.map((rs) => `
-        <div class="tnode node-rs">
-          <div class="tnode-head">
-            <span class="tnode-dot ${rs.ready >= rs.total && rs.total > 0 ? 'ok' : 'warn'}"></span>
-            <span class="tnode-kind">rs</span>
-          </div>
-          <div class="tnode-title" style="margin-top:6px">${esc(rs.name)}</div>
-          <div class="tnode-meta"><span class="tnode-chip">${rs.ready}/${rs.total} ready</span></div>
-        </div>`).join('')}
-    </div>`;
+  const rsNodes = rss.map((rs) => `
+    <div class="tnode node-rs">
+      <div class="tnode-head">
+        <span class="tnode-dot ${rs.ready >= rs.total && rs.total > 0 ? 'ok' : 'warn'}"></span>
+        <span class="tnode-kind">rs</span>
+      </div>
+      <div class="tnode-title" style="margin-top:6px">${esc(rs.name)}</div>
+      <div class="tnode-meta"><span class="tnode-chip">${rs.ready}/${rs.total} ready</span></div>
+    </div>`).join('<span class="flow-arrow">·</span>');
 
-  const podsHtml = `
-    <div class="tier tier-pods ${pods.length <= 1 ? 'single-pod' : ''}">
-      ${pods.map((p) => podNode(p, r.id)).join('')}
-    </div>`;
+  const flowHtml = `<div class="svc-flow">${ingressNode}${arrow}${deployNode}${arrow}${rsNodes}</div>`;
+  const gridHtml = `
+    <div class="pod-grid-label">└ ReplicaSet의 파드 ${pods.length}개</div>
+    <div class="pod-grid">${pods.map((p) => podNode(p, r.id)).join('')}</div>`;
 
   treeKnownPods[r.id] = new Set(pods.map((p) => p.name));
   treeRendered.add(r.id);
 
-  return `<div class="apptree-scroll"><div class="apptree">${ingressHtml}${deployHtml}${rsHtml}${podsHtml}</div></div>`;
+  return flowHtml + gridHtml;
 }
 
 function auxRow(reachable) {

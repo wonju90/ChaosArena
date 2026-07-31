@@ -928,13 +928,162 @@ Jenkins→ArgoCD 자동 재배포를 한 번 유발한다. 재배포 완료 후 
 
 ---
 
+## Part 11. 컨트롤 플레인 이중화 — KR1에도 Jenkins/ArgoCD/모니터링 통째로 복제
+
+### 11.1 왜 하는가
+
+Part 5~10까지는 Jenkins·ArgoCD·Prometheus를 전부 KR2에만 뒀다 — 사용자 트래픽 경로가 아니라서
+(`docs/CONCEPTS.md` 21절) 굳이 양쪽에 둘 필요가 없다고 판단했기 때문이다. 그런데 **그 컨트롤
+플레인이 있는 KR2 자체가 오래 장애를 겪으면**, KR1이 멀쩡히 서비스 중이어도 새 코드를 배포할
+방법이 아예 없어진다. Jenkins/ArgoCD는 Git만 읽어서 실행하는 상태 없는 오케스트레이터라(Redis처럼
+데이터가 갈라질 위험이 없음) 통째로 복제해도 안전해서, 운영 부담 2배를 감수하고 KR1에도 똑같이
+짓는다(자세한 판단 근거는 `docs/CONCEPTS.md` 21.6~21.7절).
+
+**핵심 설계**: 새 매니페스트 레포를 만들지 않고 `ChaosArena-manifests`에 `argocd-managed-kr1/`을
+`argocd-managed-kr2/`(기존 `argocd-managed/`를 개명)의 형제 폴더로 둔다. Jenkinsfile도 포크하지
+않고, 각 리전 Jenkins 컨트롤러에 심어둔 `env.REGION` 값 하나로 매니페스트 경로(`argocd-managed-kr1`
+vs `-kr2`)와 이미지 태그 접두어(`kr1-jenkins-N` vs `kr2-jenkins-N`)를 분기한다.
+
+### 11.2 매니페스트 레포 폴더 개명 + KR2 Application 경로 갱신
+
+**실행 위치: 로컬 맥북** (`~/ChaosArena-manifests` 클론에서)
+```bash
+git mv argocd-managed argocd-managed-kr2
+git commit -m "Rename argocd-managed to argocd-managed-kr2 (KR1도 자기 폴더를 가질 예정)"
+git push
+```
+곧바로 `k8s/argocd-application.yaml`의 `spec.source.path`를 `argocd-managed-kr2`로 고쳐서
+**실행 위치: KR2 마스터**에서 `kubectl apply -f k8s/argocd-application.yaml`까지 이어서 실행한다 —
+두 작업 사이 간격이 길어지면 KR2의 ArgoCD가 잠깐 경로를 못 찾아 `Unknown` 상태가 될 수 있다.
+
+### 11.3 Jenkinsfile 리전 파라미터화
+
+`Jenkinsfile` 상단에 `MANIFESTS_PATH = "argocd-managed-${env.REGION}"`,
+`IMAGE_TAG = "${env.REGION}-jenkins-${env.BUILD_NUMBER}"`를 추가하고, 매니페스트 레포 관련 `cd`
+경로를 전부 이 변수로 바꾼다. `git push origin main` 직전엔 반드시 `git pull --rebase origin main`을
+넣는다 — **이것만으로는 부족하다는 걸 실제로 겪었다** (11.7절 참고). 최종 형태는 push가 거부되면
+재동기화 후 재시도하는 루프다:
+```bash
+git pull --rebase origin main
+for i in 1 2 3 4 5; do
+    git push origin main && break
+    sleep $((RANDOM % 3 + 1))
+    git pull --rebase origin main
+done
+```
+
+⚠️ **`env.REGION`은 반드시 JCasC로 심어야 한다.** `controller.containerEnv`(Helm values)는 컨트롤러
+**컨테이너의 OS 환경변수**만 설정할 뿐이라 Jenkins Pipeline의 `env.REGION`으로는 안 들어온다 — 실제로
+이 실수로 이미지 태그가 `null-jenkins-N`으로 찍히며 빌드가 실패하는 걸 겪었다. 아래 11.4의
+`JCasC.configScripts`가 정식 통로다.
+
+### 11.4 KR1에 Jenkins 설치
+
+`k8s/jenkins-values-kr1.yaml`(신규, `k8s/jenkins-values.yaml`을 복사해 `nodeSelector`와
+`JCasC.configScripts.region-env`의 `REGION` 값만 `kr1`로 변경) + `k8s/jenkins-pv-kr1.yaml`(신규,
+KR1 워커 하나에 고정된 hostPath PV) 작성.
+
+**실행 위치: KR1 마스터**
+```bash
+kubectl create namespace jenkins
+kubectl get secret ncr-secret -n default -o yaml | sed 's/namespace: default/namespace: jenkins/' | kubectl apply -f -
+
+# cosign.key는 .gitignore 대상이라 git pull로는 못 받는다 — 로컬/KR2 마스터에서 scp로 직접 옮길 것
+kubectl create secret generic cosign-key -n jenkins \
+  --from-file=cosign.key=./cosign.key \
+  --from-literal=password='<cosign.key 만들 때 입력한 비밀번호>'
+
+# 매니페스트 레포 쓰기용 PAT — KR2와 동일한 값을 재사용한다(레포 쓰기 권한은 어느 서버에서
+# 왔는지와 무관하므로 새로 발급할 필요가 없다. 실수로 새로 발급했다가 403을 겪었다, 11.7절)
+kubectl create secret generic manifests-repo-token -n jenkins \
+  --from-literal=token='<KR2 manifests-repo-token과 동일한 PAT>'
+
+sudo mkdir -p /data/jenkins && sudo chown 1000:1000 /data/jenkins
+kubectl apply -f k8s/jenkins-pv-kr1.yaml
+helm install jenkins jenkins/jenkins -n jenkins -f k8s/jenkins-values-kr1.yaml
+```
+
+**GitHub에 두 가지를 추가로 등록**:
+1. `ChaosArena`(소스) 레포 → Settings → Webhooks → `http://<KR1 마스터 공인IP>:30880/github-webhook/`
+2. Jenkins UI(`http://<KR1 마스터 공인IP>:30880`)에서 Pipeline Job 생성 — SCM은 소스 레포/브랜치
+   그대로, Script Path는 `Jenkinsfile`, Build Triggers에 "GitHub hook trigger for GITScm polling" 체크
+
+### 11.5 매니페스트 레포에 `argocd-managed-kr1/` 시딩
+
+**실행 위치: 로컬 맥북** (`~/ChaosArena-manifests`에서)
+
+KR1의 **현재 실제 라이브 상태**를 그대로 반영한 `deployment.yaml`(현재 이미지 태그·`APP_VERSION=kr1`),
+`hpa.yaml`/`rbac.yaml`/`chaos-demo-ingress.yaml`/`service-nodeport.yaml`/`servicemonitor.yaml`/
+`prometheusrule.yaml`(전부 리전 무관이라 `argocd-managed-kr2/`에서 그대로 복사 가능), 빈
+`history.jsonl`을 담은 `deploy-history-configmap.yaml`(9.8절과 동일한 최초 부트스트랩 패턴)을 커밋해
+push한다.
+
+### 11.6 KR1에 ArgoCD 설치 — 자동 sync 없이 먼저 검증
+
+**실행 위치: KR1 마스터**
+```bash
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl -n argocd rollout status deploy/argocd-server
+kubectl -n argocd patch svc argocd-server -p '{"spec": {"type": "NodePort", "ports": [{"port": 443, "targetPort": 8080, "nodePort": 30443, "name": "https"}]}}'
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+```
+
+`k8s/argocd-application-kr1.yaml`(신규, `source.path: argocd-managed-kr1`, **`syncPolicy.automated`는
+일단 생략**)을 작성해 적용한다:
+```bash
+kubectl apply -f k8s/argocd-application-kr1.yaml
+argocd login localhost:30443 --username admin --password '<위 비밀번호>' --insecure
+argocd app diff chaos-demo
+```
+diff가 "tracking-id 라벨 추가" 정도뿐이고 이미지/env 등 실질적인 차이가 없으면(=11.5의 시딩이
+정확했다는 뜻) 수동 동기화한다:
+```bash
+argocd app sync chaos-demo
+```
+Synced/Healthy 확인 후에만 자동 모드로 전환:
+```bash
+kubectl -n argocd patch application chaos-demo --type merge \
+  -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true},"syncOptions":["CreateNamespace=false"]}}}'
+```
+
+**GitHub에 ArgoCD용 웹훅도 등록** (`ChaosArena-manifests` 레포 → Settings → Webhooks):
+- Payload URL: `https://<KR1 마스터 공인IP>:30443/api/webhook`
+- **SSL verification: 반드시 "Disable"로 설정할 것** — ArgoCD 자체 서명 인증서에 해당 IP의 SAN이
+  없어서, 검증을 켜두면 GitHub가 `tls: cannot validate certificate ... doesn't contain any IP SANs`로
+  delivery 자체를 실패시킨다(11.7절). 이 웹훅이 없으면 ArgoCD가 기본 3분 폴링에 의존하는데, Jenkins의
+  헬스체크 대기는 약 2분뿐이라 **실제로 배포는 성공했는데 "너무 늦게 반영됐다"고 오판해 자동
+  롤백되는 걸 겪었다.**
+
+### 11.7 실제로 겪은 장애물 (요약 — 자세한 진단 과정은 `PROJECT_LOG.md` 4.34절)
+
+1. **`containerEnv`로 `REGION`을 심었더니 Pipeline이 못 읽음** — JCasC `globalNodeProperties`로 교체.
+2. **`git pull --rebase` 한 번만으로는 동시 push 충돌을 못 막음** — KR1/KR2가 같은 순간에 커밋하면
+   "확인 후 실행" 사이의 틈에서 여전히 non-fast-forward 거부가 남. push 실패 시 재동기화 후 재시도하는
+   루프로 해결.
+3. **`manifests-repo-token`을 KR2와 다른 값으로 잘못 발급** — "새 서버니까 새 토큰"이라는 착각이었고,
+   실제로는 GitHub 저장소 쓰기 권한은 재사용해야 하는 값. 403으로 발견, KR2 값으로 통일해 해결.
+4. **ArgoCD 웹훅이 TLS SAN 에러로 계속 실패** — SSL verification을 Disable로 바꿔서 해결. 이걸
+   놓치면 ArgoCD가 3분 폴링에 의존하다 Jenkins의 2분 헬스체크 타임아웃보다 늦어져 정상 배포가
+   자동 롤백당하는 부작용까지 발생했다.
+
+### ✅ 확인 — 성공 기준
+
+**KR2의 Jenkins를 의도적으로 내려놓고**(`kubectl -n jenkins scale statefulset jenkins --replicas=0`)
+커밋을 push해서, KR1이 빌드→서명→매니페스트 커밋→ArgoCD 반영까지 사람 개입이나 KR2 없이 전부
+끝내는 것을 확인한다. GitHub Webhooks 화면에서 KR2 쪽 delivery는 실패(`failed to connect to
+host`), KR1 쪽은 성공으로 갈리는 걸로도 교차 확인할 수 있다. 검증 후 KR2 Jenkins는
+`--replicas=1`로 반드시 복구할 것.
+
+---
+
 ## 다음에 추가될 내용 (아직 미착수)
 
 - **TLS(HTTPS)**: cert-manager + Let's Encrypt. 443 포트를 보안그룹에 추가로 열어야 함(80은 이미 열려있음).
   ArgoCD 자체 UI(9.4절)도 지금은 자체 서명 인증서인데, 이때 같이 정리 가능
 - **Helm 차트도 ArgoCD로 관리**: Jenkins/ingress-nginx/모니터링 스택까지 GitOps 대상으로 확장(차트별
-  `Application` 추가)
-- **KR1 정식 재구축**: RAM 쿼터 확보 후 `r2.c4m16` 스펙, 워커 3대로, 그리고 이 ArgoCD 구성도 반복
+  `Application` 추가) — 단, 이건 컨트롤 플레인 하나가 관리 범위를 넓히는 방향이라 지금의 "리전별
+  독립 컨트롤 플레인" 구조와는 별개 트랙(`docs/CONCEPTS.md` 21.6절 참고)
 
 작업을 진행할 때마다 이 문서에 새 Part를 이어서 추가한다. 개념 설명이 더 필요하면 `docs/CONCEPTS.md`,
 그 과정에서 겪은 장애물의 자세한 진단 과정은 `docs/PROJECT_LOG.md`를 참고할 것.

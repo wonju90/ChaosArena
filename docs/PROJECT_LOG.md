@@ -659,6 +659,62 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   KR1 클러스터 쪽 리소스(Deployment/Redis/RBAC/secret)는 매니페스트 레포가 아니라 마스터에서 직접
   `kubectl apply`(KR1은 GitOps 대상이 아님, CI/CD는 KR2 전용).
 
+### 4.34 컨트롤 플레인 이중화 — KR1에도 Jenkins/ArgoCD/모니터링 복제 + 실제로 겪은 4가지 장애물 ⭐
+
+- **배경**: "액티브(KR1)가 오래 죽으면 스탠바이(KR2)로 failover 되니 안전하다"고 설계했지만, 반대로
+  **컨트롤 플레인(Jenkins/ArgoCD)이 있던 KR2 자체가 오래 죽으면** KR1이 멀쩡히 서비스 중이어도 새
+  코드를 배포할 방법이 없어진다는 걸 사용자가 지적. `docs/CONCEPTS.md` 21절에서 "컨트롤 플레인은
+  복제 안 해도 된다"고 정리했던 판단에 예외가 있다는 뜻이라, 그 판단 기준을 21.6~21.7절로 갱신하고
+  실제로 KR1에도 Jenkins+ArgoCD+kube-prometheus-stack을 통째로 복제했다.
+- **설계**: 새 매니페스트 레포 대신 `ChaosArena-manifests`에 `argocd-managed-kr1/`을
+  `argocd-managed-kr2/`(기존 `argocd-managed/`를 개명)의 형제 폴더로 추가. Jenkinsfile은 포크하지
+  않고 컨트롤러의 `env.REGION` 값 하나로 매니페스트 경로/이미지 태그 접두어를 분기(`SETUP_GUIDE.md`
+  Part 11 참고).
+- **장애물 1 — `containerEnv`로 심은 `REGION`이 Pipeline에 전달 안 됨** ⭐: Helm values의
+  `controller.containerEnv`는 컨트롤러 **컨테이너의 OS 환경변수**만 설정할 뿐, Jenkins Pipeline이
+  참조하는 `env.REGION`과는 다른 채널이다. 이 상태로 배포했더니 이미지 태그가 `null-jenkins-51`로
+  찍히고 `cd manifests-repo/argocd-managed-null`이 없어서 빌드 4개(#48~51)가 연속 실패 — 다행히
+  실패 지점이 "Update Manifests Repo" 단계라 실제 배포(프로덕션) 이전이라 서비스엔 영향 없었다.
+  JCasC(`controller.JCasC.configScripts`)의 `jenkins.globalNodeProperties[].envVars.env[]`로
+  바꾸니(Jenkins UI의 "Manage Jenkins → 전역 환경변수"와 동일한 정식 통로) 해결, build #53부터
+  `kr2-jenkins-53` 태그로 정상 빌드됨을 확인.
+- **장애물 2 — `git pull --rebase` 한 번만으로는 동시 push 충돌을 못 막음** ⭐: KR1/KR2가 처음으로
+  진짜 동시에 빌드된 회귀 테스트에서, KR2가 `pull --rebase`(성공) 직후 `push`하려는 그 짧은 틈에
+  KR1의 빌드가 먼저 push를 끝내버려 KR2의 push가 `[rejected] (fetch first)`로 거부됨. "확인 후
+  실행" 사이엔 항상 남이 끼어들 틈이 남는다는 걸 실측으로 확인 — push 실패 시 다시 rebase하고
+  재시도하는 루프(최대 5회, 매번 랜덤 지터)로 감싸서 해결. 이후 같은 소스 커밋으로 KR1/KR2를 다시
+  동시에 트리거했을 때 이번엔 둘 다 SUCCESS로 끝나는 것으로 재검증.
+- **장애물 3 — `manifests-repo-token`을 KR2와 다른 값으로 잘못 발급** ⭐: 설계상 이 PAT은 KR2와
+  완전히 동일한 값을 재사용해야 한다(레포 쓰기 권한은 요청이 어느 서버에서 왔는지와 무관하기
+  때문 — GitHub 계정에 귀속된 권한이지 서버별 권한이 아니다). 그런데 KR1 셋업 때 "새 서버니까 새
+  토큰"이라는 직관적이지만 틀린 판단으로 별도 PAT을 새로 발급해 넣었고, 그 결과 KR1 Jenkins가
+  빌드·서명까지 전부 성공하고도 마지막 `git push origin main`에서
+  `remote: Permission ... denied ... 403`으로 실패. 두 시크릿의 값을 직접 비교(`github_pat_...`
+  접두어까지는 같지만 그 뒤 랜덤 문자열이 완전히 다름)해서 원인을 확정하고, KR2와 동일한 값으로
+  재생성해 해결.
+- **장애물 4 — ArgoCD 웹훅이 TLS 인증서 SAN 에러로 계속 실패** ⭐: `ChaosArena-manifests` 레포에
+  KR1 ArgoCD용 웹훅(`https://<KR1 IP>:30443/api/webhook`)을 등록했는데 GitHub의 Recent Deliveries에
+  `tls: failed to verify certificate: x509: cannot validate certificate ... doesn't contain any IP
+  SANs`로 계속 실패. ArgoCD가 자체 서명 인증서를 쓰는데 그 인증서에 접속 IP가 SAN으로 안 박혀있어서
+  GitHub가 신뢰를 못 한 것 — 웹훅 설정의 "SSL verification"을 Disable로 바꾸고 나서야 delivery 성공. **이 웹훅이
+  없는 상태에서 실제로 겪은 부작용**: ArgoCD가 기본 3분 폴링에 의존하는데 Jenkins의 헬스체크 대기는
+  약 2분(10초×12회)뿐이라, 실제로는 정상적으로 배포됐을 빌드(#4)가 "너무 늦게 반영됐다"고 오판되어
+  자동 롤백 커밋이 push되는 걸 라이브로 목격 — 웹훅 등록 후 재검증하니 몇 초 안에 반영되어 롤백 없이
+  SUCCESS로 끝남.
+- **최종 검증 — 이번 작업 전체의 성공 기준**: `kubectl -n jenkins scale statefulset jenkins
+  --replicas=0`로 **KR2 Jenkins를 실제로 완전히 내려놓고** 커밋을 push. KR1이 빌드→서명→매니페스트
+  커밋→ArgoCD 반영까지 사람 개입도, KR2의 어떤 컴포넌트의 도움도 없이 혼자 끝내는 것을 실측
+  확인(build #7, S랭크). GitHub Webhooks 화면에서도 그 순간 KR2 쪽 delivery는
+  `failed to connect to host`, KR1 쪽은 성공으로 명확히 갈려서 남아 교차 검증됨. 검증 후 KR2
+  Jenkins는 `--replicas=1`로 복구.
+- **변경 파일**: `Jenkinsfile`(REGION 기반 경로/태그 분기 + push 재시도 루프),
+  `k8s/jenkins-values.yaml`(KR2, JCasC REGION 추가)/`k8s/jenkins-values-kr1.yaml`(신규),
+  `k8s/jenkins-pv-kr1.yaml`(신규), `k8s/argocd-application.yaml`(KR2, path →
+  `argocd-managed-kr2`)/`k8s/argocd-application-kr1.yaml`(신규),
+  `k8s/alertmanager-slack-values.yaml`(KR2, `[KR2]` 제목 접두어)/
+  `k8s/alertmanager-slack-values-kr1.yaml`(신규, `[KR1]` 접두어), `ChaosArena-manifests` 레포의
+  `argocd-managed` → `argocd-managed-kr2`(rename) + `argocd-managed-kr1/`(신규 시딩).
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.
@@ -761,6 +817,11 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   실제 CI/CD 재배포 후 리더보드 유지)까지 전부 실측 검증 완료(4.31절)
 - [x] **대시보드 오토스케일링(HPA) 패널** — 최소 권한(HPA 1개 `get`)으로 현재/목표 레플리카, min/max,
   CPU 사용률을 `/monitor`에서 kubectl 없이 육안 확인 가능(4.32절)
+- [x] **컨트롤 플레인 이중화** ⭐ — KR2 자체가 오래 죽으면 KR1이 멀쩡해도 배포를 못 한다는 SPOF를
+  없애기 위해 Jenkins+ArgoCD+kube-prometheus-stack을 KR1에도 통째로 복제(`docs/CONCEPTS.md`
+  21.6~21.7절, `docs/SETUP_GUIDE.md` Part 11). JCasC REGION 전파 실수, 동시 push 레이스,
+  PAT 값 불일치, ArgoCD 웹훅 TLS 에러까지 4가지 장애물을 실제로 겪고 해결(4.34절). **최종적으로
+  KR2 Jenkins를 완전히 내려놓은 상태에서 KR1이 혼자 빌드→서명→배포까지 끝내는 것을 실측 검증**
 - [ ] 마무리: main 병합, README, requirements 버전 고정
 
 ---
@@ -774,8 +835,10 @@ ChaosArena/
 ├── Dockerfile
 ├── requirements.txt
 ├── k8s/                    # rbac, deployment, hpa, ingress(-nginx), service(lb/nodeport), metallb,
-│                           # argocd-application, secret 예시 — "처음 배우는 템플릿"이며, 실제 배포
-│                           # 상태의 source of truth는 별도 ChaosArena-manifests 레포(4.22절)
+│                           # argocd-application(-kr1), jenkins-values(-kr1)/-pv(-kr1),
+│                           # alertmanager-slack-values(-kr1), secret 예시 — "처음 배우는 템플릿"이며,
+│                           # 실제 배포 상태의 source of truth는 별도 ChaosArena-manifests 레포(4.22절).
+│                           # KR1/KR2 리전별 파일은 -kr1 접미사로 구분(4.34절)
 ├── scripts/                # 01~05 클러스터 구축 + 06 GSLB failover 테스트 + 07 metrics-server
 ├── terraform/
 │   ├── providers.tf        # kr1/kr2 provider (Keystone v3)

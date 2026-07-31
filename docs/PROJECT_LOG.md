@@ -775,17 +775,25 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   ReplicaSet)와 `pod-template-hash` 라벨로 RS 그룹을 재구성하고, desired 수·CPU%만 HPA(get 권한
   기존 보유)에서 가져온다. 옛 RS는 파드가 0개라 자연히 안 잡힌다. → 최소 권한 원칙(21절)을 시각화
   기능에서도 유지.
-- **스코프**: 앱은 자기 클러스터 파드만 조회 가능(상대 리전 kubeconfig도 최소 권한상 미부여)이라,
-  상세 트리는 GSLB가 트래픽을 보내는 **서빙 리전 하나**에 대해서만 그린다. 스케일 테스트는 그
-  리전에서 하므로 데모에 정확히 맞는다.
+- **스코프 → 두 리전 통합(후속)**: 처음엔 앱이 자기 클러스터 파드만 kube로 조회 가능(상대 리전
+  kubeconfig도 최소 권한상 미부여)이라 **서빙 리전 하나**만 그렸는데, 그러면 접속 경로(GSLB→KR1
+  vs KR2 직접 IP)에 따라 트리가 KR1↔KR2로 달라지는 문제가 있었다. **해결**: 상대 리전 트리는
+  kube가 아니라 **그쪽의 `/api/topology`를 HTTP로 가져와** 합친다 — 리전 카드가 `/health`를
+  확인하던 것과 같은 서버사이드 프록시 방식(`_fetch_region_topology`). 각 리전의 `/api/topology`는
+  자기 자신만 담은 1차 응답이라 재귀 없음, 백그라운드 스레드가 5초마다 미리 모아 캐시(요청
+  스레드에서 네트워크 I/O 안 함), 프런트는 통합 엔드포인트 `/api/topology/all`만 읽는다. →
+  크로스리전 kube 크레덴셜을 여전히 안 들고도 한 화면에 KR1·KR2 트리 모두 표시, 죽은 리전은 그
+  블록만 "응답 없음"으로 저하.
 - **로컬 검증 완료(실측)**: `LOCAL_MODE`에서 `/chaos/cpu` 토글로 목업 HPA를 3→6으로 올려
-  `/api/topology`가 파드 6개(새 3개는 age가 15~45s로 갓 뜬 것처럼 표기)로 늘고, 헤드리스 Chrome
-  스크린샷으로 트리가 ArgoCD처럼 `deploy(CPU 88%/50%, HPA 3→6) → rs(6/6 ready) → pod×6`으로
-  펼쳐지는 것, 3개 기본 상태에서도 레이아웃이 깨지지 않는 것 확인. 새 파드에만 1회성 fade-in
-  적용(리전 카드 플래시와 같은 "변화 시점만 감지" 관용구).
-- **변경 파일**: `app.py`(`build_topology`/`build_mock_topology`/`format_pod_age`/`container_ready_str`
-  헬퍼, `GET /api/topology`), `templates/infra.html`(트리 패널 + 커넥터 CSS + 폴링 렌더러).
-- **라이브 검증 대기**: 실배포 후 실제 HPA 스케일아웃(부하 → 3→6) 시 트리가 자라는 것 확인 예정.
+  `/api/topology/all`이 KR1(self, 6개)·KR2(원격, 3개) 두 리전을 모두 반환하고, 헤드리스 Chrome
+  스크린샷으로 두 리전 트리가 각각 `deploy(CPU%, HPA 3→6) → rs → pod×N`으로 세로로 쌓여 펼쳐지는
+  것, 현재 리전 블록이 파란 테두리로 구분되는 것, 새 파드에만 1회성 fade-in이 적용되는 것 확인.
+- **변경 파일**: `app.py`(`build_topology`/`build_mock_topology`/`build_mock_topology_all`/
+  `format_pod_age`/`container_ready_str` 헬퍼, `_fetch_region_topology`/`_self_topology`/
+  `_build_topology_snapshot` + `_refresh_regions_loop`에 토폴로지 캐시 추가, `GET /api/topology`(1차)
+  · `GET /api/topology/all`(통합)), `templates/infra.html`(리전별 트리 블록 + 커넥터 CSS + 폴링 렌더러).
+- **라이브 검증 대기**: 실배포 후 실제 HPA 스케일아웃(부하 → 3→6) 시 두 리전 트리가 함께 뜨고
+  한쪽 리전을 내리면 그 블록만 "응답 없음"으로 바뀌는 것 확인 예정.
 
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.

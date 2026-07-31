@@ -125,6 +125,24 @@
   }
 
   .apptree-empty { font-size: 12.5px; color: #8593a8; padding: 14px 4px; }
+
+  /* 두 리전 트리를 세로로 쌓는다 — 각 리전 블록은 자기만의 가로 스크롤을 가진다 */
+  .tree-region-list { display: flex; flex-direction: column; gap: 8px; }
+  .tree-region-block {
+    border-radius: 12px; border: 1px solid rgba(148,163,184,0.10);
+    background: rgba(255,255,255,0.015); padding: 10px 12px 6px;
+  }
+  .tree-region-block.blk-self { border-color: rgba(56,189,248,0.28); background: rgba(56,189,248,0.04); }
+  .tree-region-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+  .tree-region-title { font-size: 13px; font-weight: 800; color: #e8eef7; }
+  .tree-role-tag {
+    font-size: 9.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 999px; color: #64748b; background: rgba(148,163,184,0.12);
+  }
+  .tree-role-tag.role-self { color: #38bdf8; background: rgba(56,189,248,0.14); }
+  .tree-region-status { font-size: 11.5px; font-weight: 700; margin-left: auto; }
+  .tree-region-status.ok { color: #4ade80; }
+  .tree-region-status.bad { color: #f87171; }
 {% endblock %}
 
 {% block content %}
@@ -194,13 +212,13 @@
   <div class="panel">
     <div class="flex items-center gap-2">
       <h2 class="panel-title" style="margin:0">{{ ic.i('box') }} chaos-demo 애플리케이션 트리</h2>
-      <span id="tree-region" class="tree-region-badge">확인 중…</span>
+      <span id="tree-region" class="tree-region-badge">두 리전</span>
     </div>
     <div class="text-[11px] text-faint mb-1">
-      Deployment → ReplicaSet → Pod · <b>지금 트래픽을 받는 리전</b>의 실시간 구조 (5초 갱신).
+      Deployment → ReplicaSet → Pod · <b>KR1·KR2 두 리전</b>의 실시간 구조 (5초 갱신).
       파드를 스케일하면(HPA 3→6) 오른쪽에 새 파드가 실시간으로 돋아납니다.
     </div>
-    <div id="apptree-wrap" class="apptree-scroll">
+    <div id="apptree-wrap" class="tree-region-list">
       <div class="apptree-empty">불러오는 중…</div>
     </div>
   </div>
@@ -282,19 +300,21 @@ async function refreshRegions() {
   }
 }
 
-// ── chaos-demo 애플리케이션 트리 ───────────────────────────────────────────
+// ── chaos-demo 애플리케이션 트리 (KR1 + KR2 두 리전 통합) ──────────────────
 const REGION_LABEL = { kr1: 'KR1 · 판교', kr2: 'KR2 · 평촌' };
-// 직전 폴링에 존재하던 파드 이름 집합 — 새로 등장한 파드에만 1회성 fade-in을 준다
-// (region 카드 플래시와 같은 "변화 시점만 감지" 관용구).
-let treeKnownPods = new Set();
-let treeFirstRender = true;
+// 리전별로 직전 파드 집합을 기억해, 새로 등장한 파드에만 1회성 fade-in을 준다
+// (region 카드 플래시와 같은 "변화 시점만 감지" 관용구). treeRendered는 최초 1회 렌더
+// 뒤에만 flash가 돌게 해서, 처음 그릴 때 파드 전부가 깜빡이는 걸 막는다.
+const treeKnownPods = {};        // regionId -> Set(podName)
+const treeRendered = new Set();  // 최초 렌더를 마친 리전 id
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
-function podNode(pod) {
-  const isNew = !treeFirstRender && !treeKnownPods.has(pod.name);
+function podNode(pod, regionId) {
+  const known = treeKnownPods[regionId] || new Set();
+  const isNew = treeRendered.has(regionId) && !known.has(pod.name);
   const dotCls = pod.ready ? 'ok' : (pod.phase === 'Running' ? 'warn' : 'bad');
   return `
     <div class="tnode node-pod ${isNew ? 'tpod-new' : ''}">
@@ -312,23 +332,28 @@ function podNode(pod) {
     </div>`;
 }
 
-function renderTree(data) {
-  const wrap = document.getElementById('apptree-wrap');
-  const badge = document.getElementById('tree-region');
+function regionTreeBlock(r) {
+  const label = REGION_LABEL[r.id] || r.id;
+  const roleTag = r.is_self
+    ? '<span class="tree-role-tag role-self">현재 리전</span>'
+    : '<span class="tree-role-tag">원격</span>';
 
-  if (!data.available) {
-    badge.innerText = '표시 불가';
-    wrap.innerHTML = `<div class="apptree-empty">⚠ 이 클러스터의 트리를 불러오지 못했습니다. (${esc(data.error || '알 수 없음')})</div>`;
-    return;
+  if (!r.available) {
+    return `
+      <div class="tree-region-block ${r.is_self ? 'blk-self' : ''}">
+        <div class="tree-region-head">
+          <span class="tnode-dot bad"></span>
+          <span class="tree-region-title">${esc(label)}</span>${roleTag}
+          <span class="tree-region-status bad">응답 없음</span>
+        </div>
+        <div class="apptree-empty">이 리전의 트리를 가져오지 못했습니다.</div>
+      </div>`;
   }
 
-  badge.innerText = REGION_LABEL[data.region] || data.region || '';
-
-  const d = data.deployment;
-  const rss = data.replicasets || [];
+  const d = r.deployment;
+  const rss = r.replicasets || [];
   const pods = rss.flatMap((rs) => rs.pods);
 
-  // Deployment 노드 (+ HPA 정보 배지)
   const deployChips = [`목표 ${d.desired} · 현재 ${d.current}`];
   if (d.hpa_available) {
     deployChips.push(`HPA ${d.min}→${d.max}`);
@@ -366,19 +391,40 @@ function renderTree(data) {
 
   const podsHtml = `
     <div class="tier tier-pods ${pods.length <= 1 ? 'single-pod' : ''}">
-      ${pods.map(podNode).join('')}
+      ${pods.map((p) => podNode(p, r.id)).join('')}
     </div>`;
 
-  wrap.innerHTML = `<div class="apptree">${deployHtml}${rsHtml}${podsHtml}</div>`;
+  treeKnownPods[r.id] = new Set(pods.map((p) => p.name));
+  treeRendered.add(r.id);
 
-  treeKnownPods = new Set(pods.map((p) => p.name));
-  treeFirstRender = false;
+  return `
+    <div class="tree-region-block ${r.is_self ? 'blk-self' : ''}">
+      <div class="tree-region-head">
+        <span class="tnode-dot ok"></span>
+        <span class="tree-region-title">${esc(label)}</span>${roleTag}
+        <span class="tree-region-status ok">파드 ${pods.length}개</span>
+      </div>
+      <div class="apptree-scroll"><div class="apptree">${deployHtml}${rsHtml}${podsHtml}</div></div>
+    </div>`;
+}
+
+function renderTreeAll(data) {
+  const wrap = document.getElementById('apptree-wrap');
+  const badge = document.getElementById('tree-region');
+  const regions = data.regions || [];
+
+  if (!regions.length) {
+    wrap.innerHTML = '<div class="apptree-empty">표시할 리전이 없습니다.</div>';
+    return;
+  }
+  badge.innerText = regions.map((r) => (REGION_LABEL[r.id] || r.id).split(' · ')[0]).join(' · ');
+  wrap.innerHTML = regions.map(regionTreeBlock).join('');
 }
 
 async function refreshTree() {
   try {
-    const res = await fetch('/api/topology');
-    renderTree(await res.json());
+    const res = await fetch('/api/topology/all');
+    renderTreeAll(await res.json());
   } catch (e) {
     document.getElementById('apptree-wrap').innerHTML =
       '<div class="apptree-empty">⚠ 트리를 불러오지 못했습니다.</div>';

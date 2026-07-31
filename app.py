@@ -541,6 +541,31 @@ def build_mock_topology():
     }
 
 
+def build_mock_topology_all():
+    """LOCAL_MODE용 — 두 리전 트리를 모두 담은 목업. kr1(self)은 CPU 부하 버튼으로 3<->6,
+    kr2는 3개 고정으로 보여준다(실배포의 '두 리전 동시 표시'를 로컬에서도 확인)."""
+    kr2_hash = "84c8bcbc55"
+    kr2_pods = [
+        {"name": f"chaos-demo-{kr2_hash}-{sfx}", "node": f"worker{i + 1}-kr2",
+         "phase": "Running", "ready": True, "containers": "1/1", "age": f"{5 - i}m"}
+        for i, sfx in enumerate(["799mf", "lgnq9", "xbqhp"])
+    ]
+    return {
+        "available": True,
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "regions": [
+            {"id": "kr1", "label": "판교", "is_self": True, "available": True, **build_mock_topology()},
+            {
+                "id": "kr2", "label": "평촌", "is_self": False, "available": True,
+                "deployment": {"name": "chaos-demo", "current": 3, "desired": 3, "min": 3, "max": 6,
+                               "cpu_percent": 12, "target_cpu_percent": 50, "hpa_available": True},
+                "replicasets": [{"name": f"chaos-demo-{kr2_hash}", "hash": kr2_hash,
+                                 "ready": 3, "total": 3, "pods": kr2_pods}],
+            },
+        ],
+    }
+
+
 def build_mock_deploy_history():
     """LOCAL_MODE용 가짜 배포 히스토리 — 성공 이벤트 몇 개 + 롤백 1건을 섞어 화면 확인용으로 보여준다."""
     return [
@@ -695,11 +720,66 @@ def _build_regions_snapshot():
     }
 
 
+# ── 애플리케이션 트리도 같은 백그라운드 스레드에서 '양쪽 리전 것을' 미리 모아둔다 ──
+# 자기 리전 트리는 로컬 kube로 직접 만들고(build_topology), 상대 리전 트리는 그쪽의
+# /api/topology를 HTTP로 가져온다(리전 카드가 /health를 프록시로 확인하는 것과 완전히 같은
+# 방식). 덕분에 크로스리전 kube 크레덴셜을 새로 들지 않고도 "인프라 지도 한 화면에서 두 리전
+# 트리를 모두" 보여줄 수 있다. 상대의 /api/topology는 자기 자신만 담은 1차 응답이라 재귀 없음.
+_topology_cache = {"available": True, "checked_at": None, "regions": []}
+
+
+def _fetch_region_topology(url):
+    """상대 리전의 /api/topology(자기 자신만 담긴 1차 응답)를 HTTP로 가져온다."""
+    try:
+        data = requests.get(f"{url}/api/topology", timeout=2).json()
+        return data if data.get("available") else None
+    except (requests.RequestException, ValueError) as e:
+        print(f"리전 토폴로지 확인 실패({url}): {e}")
+        return None
+
+
+def _self_topology():
+    """이 클러스터(자기 리전)의 트리를 로컬 kube로 만든다. 실패 시 None."""
+    try:
+        return build_topology(get_k8s_client(), get_autoscaling_client())
+    except (ApiException, config.ConfigException) as e:
+        print(f"자기 리전 토폴로지 생성 실패: {e}")
+        return None
+
+
+def _topology_region_entry(region, topo):
+    """리전 메타(id/label/is_self)와 트리 데이터를 합쳐 한 리전 항목을 만든다."""
+    entry = {
+        "id": region["id"],
+        "label": region["label"],
+        "is_self": region["id"] == APP_VERSION,
+        "available": topo is not None,
+    }
+    if topo is not None:
+        entry["deployment"] = topo.get("deployment")
+        entry["replicasets"] = topo.get("replicasets", [])
+    return entry
+
+
+def _build_topology_snapshot():
+    results = []
+    for region in REGIONS:
+        is_self = region["id"] == APP_VERSION
+        topo = _self_topology() if is_self else _fetch_region_topology(region["url"])
+        results.append(_topology_region_entry(region, topo))
+    return {
+        "available": True,
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "regions": results,
+    }
+
+
 def _refresh_regions_loop():
-    global _regions_cache
+    global _regions_cache, _topology_cache
     while True:
         if REGIONS:
             _regions_cache = _build_regions_snapshot()  # 새 dict 통째로 스왑 -> 원자적, Lock 불필요
+            _topology_cache = _build_topology_snapshot()
         time.sleep(5)
 
 
@@ -914,10 +994,10 @@ def api_regions():
 @app.route("/api/topology")
 def api_topology():
     """
-    인프라 지도(/infra)의 'chaos-demo 애플리케이션 트리'용 — 이 앱이 떠 있는 클러스터(=지금
-    트래픽을 받는 리전)의 Deployment -> ReplicaSet -> Pod 계층을 실시간으로 돌려준다.
-    파드 조회 권한만으로 재구성하며(build_topology 참고), 상대 리전의 트리는 크로스리전
-    크레덴셜이 없어(=최소 권한 원칙) 표시하지 않는다 - self 리전 카드에서만 트리가 펼쳐진다.
+    1차(자기 리전) 트리 — 이 앱이 떠 있는 클러스터의 Deployment -> ReplicaSet -> Pod 계층만
+    돌려준다. 파드 조회 권한만으로 재구성하며(build_topology 참고), 상대 리전 것은 담지 않는다
+    (재귀 방지). 이 엔드포인트는 두 용도로 쓰인다: (1) 상대 리전이 HTTP로 이걸 가져가 자기
+    화면에 합침(_fetch_region_topology), (2) 아래 /api/topology/all이 self 트리로 사용.
     """
     checked = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if LOCAL_MODE:
@@ -931,6 +1011,28 @@ def api_topology():
         return jsonify({"available": False, "error": f"쿠버네티스 API 호출 실패: {describe_k8s_error(e)}"})
 
     return jsonify({"available": True, "region": APP_VERSION, "checked_at": checked, **topo})
+
+
+@app.route("/api/topology/all")
+def api_topology_all():
+    """
+    /infra 트리 패널이 폴링하는 '통합' 엔드포인트 — 어느 리전이 페이지를 띄우든 KR1·KR2 트리를
+    모두 담아 돌려준다. 자기 리전은 로컬 kube로, 상대 리전은 백그라운드 스레드가 미리 HTTP로
+    가져다 둔 _topology_cache에서 읽는다(요청 스레드에서 네트워크 I/O 안 함). REGIONS가 아직
+    설정 안 된 클러스터에서는 자기 리전 하나만 단일 항목으로 우아하게 저하한다.
+    """
+    checked = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if LOCAL_MODE:
+        return jsonify(build_mock_topology_all())
+
+    if not REGIONS:
+        topo = _self_topology()
+        region = {"id": APP_VERSION, "label": APP_VERSION, "is_self": True, "available": topo is not None}
+        if topo is not None:
+            region.update({"deployment": topo["deployment"], "replicasets": topo["replicasets"]})
+        return jsonify({"available": True, "checked_at": checked, "regions": [region]})
+
+    return jsonify(_topology_cache)
 
 
 @app.route("/api/deploy-history")

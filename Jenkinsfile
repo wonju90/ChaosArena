@@ -173,10 +173,17 @@ spec:
                         git add deployment.yaml
                         git commit -m "chaos-demo: bump to ${IMAGE_TAG} (build #${env.BUILD_NUMBER}, ${env.GIT_COMMIT_SHORT})" || echo "변경 없음, 커밋 스킵"
                         # KR1/KR2 두 Jenkins가 같은 main 브랜치에(서로 다른 폴더지만) 각자 커밋하므로,
-                        # 하필 비슷한 시각에 겹치면 논-패스트포워드로 push가 거부될 수 있다 — pusher가
-                        # 하나뿐이던 지금까지는 안 겪은 문제라 미리 방어해둔다.
+                        # 하필 비슷한 시각에 겹치면 논-패스트포워드로 push가 거부될 수 있다. pull --rebase를
+                        # 한 번만 하고 push하면 그 "확인 후 실행" 사이의 틈에 남이 또 push할 수 있어 여전히
+                        # 실패할 수 있음을 실제로 겪었다(KR1/KR2 동시 빌드 재현 시) — 그래서 push 실패 시
+                        # 다시 rebase하고 재시도하는 루프로 감싼다.
                         git pull --rebase origin main
-                        git push origin main
+                        for i in 1 2 3 4 5; do
+                            git push origin main && break
+                            echo "push 거부됨(다른 리전이 먼저 push) - \$i번째 재시도 전 재동기화"
+                            sleep \$((RANDOM % 3 + 1))
+                            git pull --rebase origin main
+                        done
                     """
                 }
             }
@@ -225,7 +232,12 @@ spec:
                                 git add deploy-history-configmap.yaml
                                 git commit -m "history: chaos-demo build #${env.BUILD_NUMBER} 배포 성공 기록" || echo "변경 없음, 커밋 스킵"
                                 git pull --rebase origin main
-                                git push origin main
+                                for i in 1 2 3 4 5; do
+                                    git push origin main && break
+                                    echo "push 거부됨(다른 리전이 먼저 push) - \$i번째 재시도 전 재동기화"
+                                    sleep \$((RANDOM % 3 + 1))
+                                    git pull --rebase origin main
+                                done
                             """
                         }
 
@@ -250,7 +262,12 @@ spec:
                                 git add deployment.yaml deploy-history-configmap.yaml
                                 git commit -m "ROLLBACK: chaos-demo build #${env.BUILD_NUMBER} 헬스체크 실패, build #\$PREVIOUS_BUILD_NUMBER로 복구"
                                 git pull --rebase origin main
-                                git push origin main
+                                for i in 1 2 3 4 5; do
+                                    git push origin main && break
+                                    echo "push 거부됨(다른 리전이 먼저 push) - \$i번째 재시도 전 재동기화"
+                                    sleep \$((RANDOM % 3 + 1))
+                                    git pull --rebase origin main
+                                done
                             """
                             error("배포 후 헬스체크 실패 — 이전 빌드로 자동 롤백 커밋을 push했습니다.")
                         }

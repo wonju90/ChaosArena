@@ -1,0 +1,36 @@
+# k8s/argocd-application.yaml(KR2)의 KR1 전용 사본. 컨트롤 플레인 이중화(각 리전이 독립된
+# Jenkins/ArgoCD/모니터링 스택을 갖게 됨, docs/PROJECT_LOG.md 참고)의 일환으로 KR1에도 설치한다.
+#
+# ⚠️ KR2와 다르게 syncPolicy.automated를 일부러 뺐다 — 최초 적용 때는 수동으로
+# `argocd app sync chaos-demo`를 실행해서 ArgoCD가 보여주는 diff가 KR1의 실제 라이브 상태와
+# 정확히 일치하는지 눈으로 먼저 확인한 다음에, 문제없으면 automated(prune+selfHeal)를 patch로
+# 추가한다(9.8절/PROJECT_LOG.md의 최초 부트스트랩 패턴과 동일한 이유 — 매니페스트를 손으로 미리
+# 맞춰서 추측하는 것보다 ArgoCD의 실제 diff를 보고 확정하는 게 실수 여지가 적음).
+#
+# 적용 방법: kubectl apply -f k8s/argocd-application-kr1.yaml -n argocd
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: chaos-demo
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/wonju90/ChaosArena-manifests.git
+    targetRevision: main
+    path: argocd-managed-kr1
+
+  destination:
+    # ArgoCD가 설치된 클러스터 자기 자신(KR1)을 가리키는 특수 값 — 별도 kubeconfig 등록 불필요.
+    server: https://kubernetes.default.svc
+    namespace: default
+
+  # syncPolicy를 아예 생략 — 자동 동기화 없이, `argocd app sync`로 수동 동기화하고 diff를
+  # 확인한 뒤에만 아래 블록을 patch로 추가한다:
+  #   syncPolicy:
+  #     automated:
+  #       prune: true
+  #       selfHeal: true
+  #     syncOptions:
+  #       - CreateNamespace=false

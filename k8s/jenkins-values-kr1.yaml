@@ -1,0 +1,44 @@
+# -----------------------------------------------------------------------------
+# k8s/jenkins-values.yaml(KR2)의 KR1 전용 사본. 컨트롤 플레인 이중화(각 리전이 독립된
+# Jenkins/ArgoCD/모니터링 스택을 갖게 됨, docs/PROJECT_LOG.md 참고)의 일환으로 KR1에도
+# 설치한다. KR2와 다른 건 nodeSelector(다른 워커)와 JCasC의 REGION 값뿐이다.
+#
+# 적용: helm upgrade --install jenkins jenkins/jenkins -n jenkins -f k8s/jenkins-values-kr1.yaml
+# -----------------------------------------------------------------------------
+controller:
+  serviceType: NodePort
+  nodePort: 30880
+  nodeSelector:
+    kubernetes.io/hostname: chaosarena-worker1-kr1
+  JCasC:
+    configScripts:
+      region-env: |
+        jenkins:
+          globalNodeProperties:
+            - envVars:
+                env:
+                  - key: "REGION"
+                    value: "kr1"
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  installPlugins:
+    - kubernetes
+    - workflow-aggregator
+    - git
+    - github
+    - github-branch-source
+    - configuration-as-code
+    - credentials-binding
+
+persistence:
+  enabled: true
+  storageClass: jenkins-local
+  size: 8Gi
+
+agent:
+  enabled: true

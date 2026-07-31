@@ -1,0 +1,34 @@
+# -----------------------------------------------------------------------------
+# k8s/jenkins-pv.yaml(KR2)과 완전히 같은 이유, 같은 방식이다 - KR1 전용 사본.
+# KR1도 StorageClass가 없는 bare-metal kubeadm 클러스터라 워커 노드 1대의 로컬 디렉터리를
+# hostPath로 직접 지정하는 수동 PV가 필요하다.
+#
+# 주의: hostPath는 그 노드의 로컬 디스크만 가리키므로, Jenkins 컨트롤러 파드도
+# nodeSelector(kubernetes.io/hostname: chaosarena-worker1-kr1)로 반드시 같은 노드에 고정해야
+# 한다(k8s/jenkins-values-kr1.yaml의 controller.nodeSelector 참고).
+#
+# 사전 준비 (적용 전에 아래 노드에서 1회 실행):
+#   sudo mkdir -p /data/jenkins && sudo chown 1000:1000 /data/jenkins
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: jenkins-pv
+spec:
+  capacity:
+    storage: 8Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: jenkins-local
+  hostPath:
+    path: /data/jenkins
+    type: Directory
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - chaosarena-worker1-kr1

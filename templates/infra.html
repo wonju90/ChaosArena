@@ -2,7 +2,7 @@
 {% import "_icons.html" as ic %}
 {% block title %}인프라 지도 — ChaosArena{% endblock %}
 {% block page_title %}인프라 지도{% endblock %}
-{% block page_sub %}KR1(판교)/KR2(평촌) 리전 상태와 GSLB 트래픽 대상을 실시간으로 관찰합니다{% endblock %}
+{% block page_sub %}GSLB → 판교/평촌 리전 → chaos-demo(Deployment·ReplicaSet·Pod)까지, 전체 인프라 흐름을 한 화면에서 실시간으로 관찰합니다{% endblock %}
 
 {% block extra_style %}
   .infra-callout {
@@ -11,70 +11,67 @@
     color: #bcd6ea; font-size: 12.5px; line-height: 1.6;
   }
 
-  /* GSLB 현재 트래픽 대상 스트립 */
-  .gslb-strip {
-    display: flex; align-items: center; justify-content: center; gap: 18px;
-    padding: 14px 18px;
+  /* ── GSLB (글로벌 진입점) ── */
+  .flow-gslb {
+    border-radius: 12px; padding: 12px 16px; margin-top: 4px;
+    background: linear-gradient(180deg, rgba(56,189,248,0.08), rgba(56,189,248,0.02));
+    border: 1px solid rgba(56,189,248,0.28);
   }
+  .flow-gslb-label { font-size: 12.5px; font-weight: 800; color: #7dd3fc; }
+  .gslb-strip { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 8px 0 2px; }
   .gslb-side {
-    display: flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: 999px;
-    font-size: 13px; font-weight: 700; color: #64748b; background: rgba(51,65,85,0.35);
+    display: flex; align-items: center; gap: 7px; padding: 6px 13px; border-radius: 999px;
+    font-size: 12.5px; font-weight: 700; color: #64748b; background: rgba(51,65,85,0.35);
     transition: color 0.3s ease, background 0.3s ease;
   }
   .gslb-side.gslb-serving { color: #38bdf8; background: rgba(56,189,248,0.15); }
   .gslb-side-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
   .gslb-side-dot.pulse { animation: gslb-pulse 1.6s ease-in-out infinite; }
   @keyframes gslb-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-  .gslb-arrow { font-size: 18px; color: #475569; }
+  .gslb-arrow { font-size: 17px; color: #475569; }
 
-  /* 리전 카드 */
-  .region-card {
-    border-radius: 14px; padding: 16px 18px; background: #0b1220;
+  /* GSLB에서 두 리전으로 갈라지는 짧은 세로 커넥터 */
+  .flow-branch { width: 2px; height: 18px; background: #2b3a52; margin: 0 auto; }
+
+  /* ── 리전 레인 (하나의 흐름 안에서 판교/평촌을 세로로 쌓음) ── */
+  .lane-list { display: flex; flex-direction: column; gap: 12px; }
+  .region-lane {
+    border-radius: 14px; padding: 13px 15px; background: #0b1220;
     border: 1.5px solid rgba(148,163,184,0.14);
     transition: border-color 0.4s ease, background 0.4s ease, box-shadow 0.4s ease;
   }
-  .region-card.region-up { border-color: rgba(34,197,94,0.30); }
-  .region-card.region-down { border-color: rgba(239,68,68,0.55); background: rgba(239,68,68,0.06); }
-  .region-card.region-serving { box-shadow: 0 0 0 2px rgba(56,189,248,0.35) inset; }
-  .region-card.flash-down { animation: region-flash-red 1.1s ease-out; }
+  .region-lane.lane-up { border-color: rgba(34,197,94,0.28); }
+  .region-lane.lane-down { border-color: rgba(239,68,68,0.55); background: rgba(239,68,68,0.06); }
+  .region-lane.lane-serving-on { box-shadow: 0 0 0 2px rgba(56,189,248,0.35) inset; }
+  .region-lane.flash-down { animation: region-flash-red 1.1s ease-out; }
   @keyframes region-flash-red {
     0% { background: rgba(239,68,68,0.35); } 100% { background: rgba(239,68,68,0.06); }
   }
 
-  .region-dot { width: 16px; height: 16px; border-radius: 50%; background: #334155; transition: background 0.3s; flex: none; }
-  .region-dot-up { background: #22c55e; box-shadow: 0 0 10px rgba(34,197,94,0.55); }
-  .region-dot-down { background: #ef4444; box-shadow: 0 0 10px rgba(239,68,68,0.55); }
-
-  .region-head { display: flex; align-items: center; gap: 10px; }
-  .region-name { font-size: 15.5px; font-weight: 800; color: #e8eef7; }
-  .region-status-text { font-size: 12px; color: #8593a8; margin-left: auto; font-weight: 600; }
-
-  .region-row {
-    display: flex; align-items: center; gap: 10px; padding: 9px 10px; margin-top: 8px;
-    border-radius: 9px; background: rgba(255,255,255,0.02); border: 1px solid rgba(148,163,184,0.08);
+  .lane-head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+  .lane-title { font-size: 14.5px; font-weight: 800; color: #e8eef7; }
+  .lane-role {
+    font-size: 9.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 999px; color: #64748b; background: rgba(148,163,184,0.12);
   }
-  .region-row-icon { font-size: 15px; flex: none; width: 20px; text-align: center; }
-  .region-row-label { font-size: 12.5px; font-weight: 700; color: #cdd7e6; }
-  .region-row-sub { font-size: 10.8px; color: #64748b; }
-
-  .infra-checked-at { font-size: 11px; color: #64748b; text-align: right; margin-top: 4px; }
-
-  /* ── chaos-demo 애플리케이션 트리 (ArgoCD Application Details Tree 재현) ── */
-  .tree-region-badge {
-    font-size: 11px; font-weight: 700; color: #38bdf8;
-    background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.30);
-    padding: 3px 10px; border-radius: 999px; margin-left: auto;
+  .lane-role.role-self { color: #38bdf8; background: rgba(56,189,248,0.14); }
+  .lane-serving {
+    font-size: 10px; font-weight: 800; color: #38bdf8;
+    background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.3);
+    padding: 2px 8px; border-radius: 999px;
   }
-  .apptree-scroll { overflow-x: auto; padding: 10px 4px 4px; }
-  .apptree {
-    display: flex; flex-direction: row; align-items: center; gap: 34px;
-    min-width: max-content;
-  }
+  .lane-status { font-size: 12px; font-weight: 700; margin-left: auto; }
+  .lane-status.ok { color: #4ade80; }
+  .lane-status.bad { color: #f87171; }
+
+  /* ── 서비스 경로: Ingress → deploy → rs → pods (ArgoCD Application Tree식) ── */
+  .apptree-scroll { overflow-x: auto; padding: 6px 4px 2px; }
+  .apptree { display: flex; flex-direction: row; align-items: center; gap: 34px; min-width: max-content; }
   .tier { display: flex; flex-direction: column; justify-content: center; gap: 12px; position: relative; }
 
   .tnode {
     position: relative; border-radius: 11px; padding: 10px 13px; background: #0e1626;
-    border: 1.5px solid rgba(148,163,184,0.16); min-width: 178px;
+    border: 1.5px solid rgba(148,163,184,0.16); min-width: 172px;
     transition: border-color 0.35s ease, box-shadow 0.35s ease, opacity 0.4s ease, transform 0.4s ease;
   }
   .tnode-head { display: flex; align-items: center; gap: 8px; }
@@ -96,6 +93,7 @@
   .tnode-dot.bad { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.55); }
   .tnode-dot.warn { background: #fbbf24; box-shadow: 0 0 8px rgba(251,191,36,0.55); }
 
+  .tnode.node-ingress { border-color: rgba(148,163,184,0.22); }
   .tnode.node-deploy { border-color: rgba(56,189,248,0.35); }
   .tnode.node-pod { min-width: 210px; }
   .tnode.tpod-new { animation: tpod-in 0.55s ease-out; }
@@ -105,120 +103,70 @@
   }
 
   /* 커넥터 라인 */
+  .tier-deploy > .tnode::before,
   .tier-rs > .tnode::before {
-    content: ''; position: absolute; left: -34px; top: 50%; width: 34px; height: 2px;
-    background: #2b3a52;
+    content: ''; position: absolute; left: -34px; top: 50%; width: 34px; height: 2px; background: #2b3a52;
   }
   .tier-rs > .tnode::after {
-    content: ''; position: absolute; right: -17px; top: 50%; width: 17px; height: 2px;
-    background: #2b3a52;
+    content: ''; position: absolute; right: -17px; top: 50%; width: 17px; height: 2px; background: #2b3a52;
   }
   .tier-pods { position: relative; }
   .tier-pods::before {
-    content: ''; position: absolute; left: -17px; top: 26px; bottom: 26px; width: 2px;
-    background: #2b3a52;
+    content: ''; position: absolute; left: -17px; top: 26px; bottom: 26px; width: 2px; background: #2b3a52;
   }
   .tier-pods.single-pod::before { display: none; }
   .tier-pods > .tnode::before {
-    content: ''; position: absolute; left: -17px; top: 50%; width: 17px; height: 2px;
-    background: #2b3a52;
+    content: ''; position: absolute; left: -17px; top: 50%; width: 17px; height: 2px; background: #2b3a52;
   }
 
-  .apptree-empty { font-size: 12.5px; color: #8593a8; padding: 14px 4px; }
+  /* ── 리전 부속 컴포넌트 (Redis / 모니터링 / CI·CD) ── */
+  .lane-aux { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 11px; border-top: 1px dashed rgba(148,163,184,0.14); }
+  .aux-chip {
+    display: flex; align-items: baseline; gap: 6px;
+    font-size: 11.5px; font-weight: 700; color: #cdd7e6;
+    background: rgba(255,255,255,0.02); border: 1px solid rgba(148,163,184,0.12);
+    padding: 6px 11px; border-radius: 9px;
+  }
+  .aux-chip i { font-style: normal; font-size: 10px; font-weight: 600; color: #64748b; }
+  .aux-chip.aux-off { opacity: 0.4; }
 
-  /* 두 리전 트리를 세로로 쌓는다 — 각 리전 블록은 자기만의 가로 스크롤을 가진다 */
-  .tree-region-list { display: flex; flex-direction: column; gap: 8px; }
-  .tree-region-block {
-    border-radius: 12px; border: 1px solid rgba(148,163,184,0.10);
-    background: rgba(255,255,255,0.015); padding: 10px 12px 6px;
-  }
-  .tree-region-block.blk-self { border-color: rgba(56,189,248,0.28); background: rgba(56,189,248,0.04); }
-  .tree-region-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
-  .tree-region-title { font-size: 13px; font-weight: 800; color: #e8eef7; }
-  .tree-role-tag {
-    font-size: 9.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
-    padding: 2px 7px; border-radius: 999px; color: #64748b; background: rgba(148,163,184,0.12);
-  }
-  .tree-role-tag.role-self { color: #38bdf8; background: rgba(56,189,248,0.14); }
-  .tree-region-status { font-size: 11.5px; font-weight: 700; margin-left: auto; }
-  .tree-region-status.ok { color: #4ade80; }
-  .tree-region-status.bad { color: #f87171; }
+  .apptree-empty { font-size: 12.5px; color: #8593a8; padding: 16px 4px; }
+  .infra-checked-at { font-size: 11px; color: #64748b; text-align: right; margin-top: 4px; }
 {% endblock %}
 
 {% block content %}
-{% set components = [
-  ('🔀', 'Ingress-nginx', '포트 번호 없이 접속'),
-  ('🎮', 'chaos-demo × 3', 'Self-Healing 대상 · HPA로 3 → 6'),
-  ('🗄️', 'Redis', '기록실(리더보드) · 리전 전용 인스턴스'),
-  ('📊', '모니터링 스택', 'Prometheus + Grafana + Alertmanager'),
-  ('🧰', 'Jenkins (CI)', '빌드 → 서명 → 매니페스트 커밋'),
-  ('🔄', 'ArgoCD (CD)', 'GitOps Pull-Sync · selfHeal'),
-] %}
-
 <div class="flex flex-col gap-4">
 
   <div class="infra-callout">
-    💡 이 화면은 각 리전에 <b>직접 연결</b>해서 수 초 안에 확인한 결과예요. 반면 실제 사용자가
-    보는 GSLB DNS 전환은 TTL(30초) 때문에 <b>30~80초 정도 더 걸릴 수 있어요</b> — 아래 리전
-    카드가 먼저 빨갛게 바뀌고, 그 위 GSLB 배지는 조금 늦게 반대편으로 넘어가는 게 정상입니다.
-  </div>
-
-  <div class="panel">
-    <h2 class="panel-title">{{ ic.i('activity') }} GSLB 현재 트래픽 대상</h2>
-    <div class="gslb-strip">
-      <span id="gslb-kr1" class="gslb-side"><span class="gslb-side-dot"></span>KR1 · 판교</span>
-      <span class="gslb-arrow">⇄</span>
-      <span id="gslb-kr2" class="gslb-side"><span class="gslb-side-dot"></span>KR2 · 평촌</span>
-    </div>
-    <div id="gslb-hint" class="text-center text-[11px] text-faint">확인 중…</div>
-  </div>
-
-  <div class="grid gap-4 lg:grid-cols-2">
-    <div id="region-card-kr1" class="region-card">
-      <div class="region-head">
-        <span id="region-dot-kr1" class="region-dot"></span>
-        <span class="region-name">☸️ KR1 · 판교</span>
-        <span id="region-status-kr1" class="region-status-text">확인 중…</span>
-      </div>
-      {% for icon, label, sub in components %}
-      <div class="region-row">
-        <span class="region-row-icon">{{ icon }}</span>
-        <div>
-          <div class="region-row-label">{{ label }}</div>
-          <div class="region-row-sub">{{ sub }}</div>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-
-    <div id="region-card-kr2" class="region-card">
-      <div class="region-head">
-        <span id="region-dot-kr2" class="region-dot"></span>
-        <span class="region-name">☸️ KR2 · 평촌</span>
-        <span id="region-status-kr2" class="region-status-text">확인 중…</span>
-      </div>
-      {% for icon, label, sub in components %}
-      <div class="region-row">
-        <span class="region-row-icon">{{ icon }}</span>
-        <div>
-          <div class="region-row-label">{{ label }}</div>
-          <div class="region-row-sub">{{ sub }}</div>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
+    💡 이 화면은 각 리전에 <b>직접 연결</b>해서 수 초 안에 확인한 결과예요. 반면 실제 사용자가 보는
+    GSLB DNS 전환은 TTL(30초) 때문에 <b>30~80초 정도 더 걸릴 수 있어요</b> — 아래 리전 레인이 먼저
+    빨갛게 바뀌고, 맨 위 GSLB 대상 배지는 조금 늦게 반대편으로 넘어가는 게 정상입니다.
   </div>
 
   <div class="panel">
     <div class="flex items-center gap-2">
-      <h2 class="panel-title" style="margin:0">{{ ic.i('box') }} chaos-demo 애플리케이션 트리</h2>
-      <span id="tree-region" class="tree-region-badge">두 리전</span>
+      <h2 class="panel-title" style="margin:0">{{ ic.i('box') }} 전체 인프라 흐름</h2>
+      <span class="lane-role role-self" style="margin-left:auto">KR1 · KR2</span>
     </div>
-    <div class="text-[11px] text-faint mb-1">
-      Deployment → ReplicaSet → Pod · <b>KR1·KR2 두 리전</b>의 실시간 구조 (5초 갱신).
-      파드를 스케일하면(HPA 3→6) 오른쪽에 새 파드가 실시간으로 돋아납니다.
+    <div class="text-[11px] text-faint mb-2">
+      GSLB → 리전(판교/평촌) → Ingress → chaos-demo(Deployment→ReplicaSet→Pod) · Redis · 모니터링 · CI/CD
+      — 5초 갱신. 파드를 스케일하면(HPA 3→6) 해당 리전 흐름에 새 파드가 실시간으로 돋아납니다.
     </div>
-    <div id="apptree-wrap" class="tree-region-list">
+
+    <!-- 글로벌 진입점: GSLB -->
+    <div class="flow-gslb">
+      <span class="flow-gslb-label">🌐 GSLB · www.chaosarena.cloud</span>
+      <div class="gslb-strip">
+        <span id="gslb-kr1" class="gslb-side"><span class="gslb-side-dot"></span>KR1 · 판교</span>
+        <span class="gslb-arrow">⇄</span>
+        <span id="gslb-kr2" class="gslb-side"><span class="gslb-side-dot"></span>KR2 · 평촌</span>
+      </div>
+      <div id="gslb-hint" class="text-center text-[11px] text-faint">확인 중…</div>
+    </div>
+    <div class="flow-branch"></div>
+
+    <!-- 리전 레인 (JS 렌더) -->
+    <div id="infra-flow" class="lane-list">
       <div class="apptree-empty">불러오는 중…</div>
     </div>
   </div>
@@ -230,86 +178,28 @@
 
 {% block extra_script %}
 <script>
-// 폴링마다 반복 재생되지 않도록, 직전 상태와 비교해서 "바뀐 순간"에만 플래시를 재생한다
-// (cicd.html의 isFreshDeploy 판단과 같은 관용구).
+const REGION_LABEL = { kr1: 'KR1 · 판교', kr2: 'KR2 · 평촌' };
+// 리전이 reachable true→false로 바뀌는 순간에만 1회성 플래시(매 폴링 반복 방지).
 const infraLastReachable = { kr1: null, kr2: null };
+// 리전별 직전 파드 집합 — 새로 등장한 파드에만 fade-in. treeRendered는 최초 렌더 후에만 flash.
+const treeKnownPods = {};
+const treeRendered = new Set();
 
-function renderRegionCard(id, reachable, isServing) {
-  const card = document.getElementById('region-card-' + id);
-  const dot = document.getElementById('region-dot-' + id);
-  const statusText = document.getElementById('region-status-' + id);
-
-  card.classList.toggle('region-up', reachable);
-  card.classList.toggle('region-down', !reachable);
-  card.classList.toggle('region-serving', isServing);
-  dot.className = 'region-dot ' + (reachable ? 'region-dot-up' : 'region-dot-down');
-  statusText.innerText = reachable ? '정상 응답' : '응답 없음';
-  statusText.style.color = reachable ? '#4ade80' : '#f87171';
-
-  const prev = infraLastReachable[id];
-  if (prev === true && reachable === false) {
-    card.classList.remove('flash-down');
-    void card.offsetWidth; // 리플로우 강제 -> 애니메이션 재시작 트릭
-    card.classList.add('flash-down');
-  }
-  infraLastReachable[id] = reachable;
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
 function renderGslbStrip(gslbTarget) {
   const kr1El = document.getElementById('gslb-kr1');
   const kr2El = document.getElementById('gslb-kr2');
   const hint = document.getElementById('gslb-hint');
-
   kr1El.classList.toggle('gslb-serving', gslbTarget === 'kr1');
   kr2El.classList.toggle('gslb-serving', gslbTarget === 'kr2');
   kr1El.querySelector('.gslb-side-dot').classList.toggle('pulse', gslbTarget === 'kr1');
   kr2El.querySelector('.gslb-side-dot').classList.toggle('pulse', gslbTarget === 'kr2');
-
   if (gslbTarget === 'kr1') hint.innerText = '지금 실제 사용자 트래픽은 KR1(판교)로 갑니다';
   else if (gslbTarget === 'kr2') hint.innerText = '지금 실제 사용자 트래픽은 KR2(평촌)로 갑니다';
   else hint.innerText = '판정 중… (공개 도메인 응답을 아직 못 받았어요)';
-}
-
-async function refreshRegions() {
-  try {
-    const res = await fetch('/api/regions');
-    const data = await res.json();
-
-    if (!data.available) {
-      ['kr1', 'kr2'].forEach((id) => {
-        document.getElementById('region-status-' + id).innerText = 'REGIONS_JSON 미설정';
-        document.getElementById('region-status-' + id).style.color = '#8593a8';
-        document.getElementById('region-dot-' + id).className = 'region-dot';
-      });
-      document.getElementById('gslb-hint').innerText = '이 클러스터엔 아직 REGIONS_JSON이 설정되지 않았어요.';
-      return;
-    }
-
-    const byId = {};
-    (data.regions || []).forEach((r) => { byId[r.id] = r; });
-
-    if (byId.kr1) renderRegionCard('kr1', byId.kr1.reachable, data.gslb_target === 'kr1');
-    if (byId.kr2) renderRegionCard('kr2', byId.kr2.reachable, data.gslb_target === 'kr2');
-    renderGslbStrip(data.gslb_target);
-
-    if (data.checked_at) {
-      document.getElementById('infra-checked-at').innerText = '마지막 확인: ' + data.checked_at;
-    }
-  } catch (e) {
-    document.getElementById('gslb-hint').innerText = '⚠ 인프라 상태를 불러오지 못했습니다.';
-  }
-}
-
-// ── chaos-demo 애플리케이션 트리 (KR1 + KR2 두 리전 통합) ──────────────────
-const REGION_LABEL = { kr1: 'KR1 · 판교', kr2: 'KR2 · 평촌' };
-// 리전별로 직전 파드 집합을 기억해, 새로 등장한 파드에만 1회성 fade-in을 준다
-// (region 카드 플래시와 같은 "변화 시점만 감지" 관용구). treeRendered는 최초 1회 렌더
-// 뒤에만 flash가 돌게 해서, 처음 그릴 때 파드 전부가 깜빡이는 걸 막는다.
-const treeKnownPods = {};        // regionId -> Set(podName)
-const treeRendered = new Set();  // 최초 렌더를 마친 리전 id
-
-function esc(s) {
-  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
 function podNode(pod, regionId) {
@@ -332,27 +222,20 @@ function podNode(pod, regionId) {
     </div>`;
 }
 
-function regionTreeBlock(r) {
-  const label = REGION_LABEL[r.id] || r.id;
-  const roleTag = r.is_self
-    ? '<span class="tree-role-tag role-self">현재 리전</span>'
-    : '<span class="tree-role-tag">원격</span>';
-
-  if (!r.available) {
-    return `
-      <div class="tree-region-block ${r.is_self ? 'blk-self' : ''}">
-        <div class="tree-region-head">
-          <span class="tnode-dot bad"></span>
-          <span class="tree-region-title">${esc(label)}</span>${roleTag}
-          <span class="tree-region-status bad">응답 없음</span>
-        </div>
-        <div class="apptree-empty">이 리전의 트리를 가져오지 못했습니다.</div>
-      </div>`;
-  }
-
-  const d = r.deployment;
-  const rss = r.replicasets || [];
+// Ingress → deploy → rs → pods 한 줄 흐름
+function serviceFlow(r) {
+  const d = r.topo.deployment;
+  const rss = r.topo.replicasets || [];
   const pods = rss.flatMap((rs) => rs.pods);
+
+  const ingressHtml = `
+    <div class="tier tier-ingress">
+      <div class="tnode node-ingress">
+        <div class="tnode-head"><span class="tnode-dot ok"></span><span class="tnode-kind">svc</span></div>
+        <div class="tnode-title" style="margin-top:6px">Ingress-nginx</div>
+        <div class="tnode-meta"><span class="tnode-chip">포트 번호 없이 접속</span></div>
+      </div>
+    </div>`;
 
   const deployChips = [`목표 ${d.desired} · 현재 ${d.current}`];
   if (d.hpa_available) {
@@ -375,7 +258,6 @@ function regionTreeBlock(r) {
       </div>
     </div>`;
 
-  // ReplicaSet 노드(들) — 보통 1개, 롤아웃 중엔 잠깐 2개
   const rsHtml = `
     <div class="tier tier-rs">
       ${rss.map((rs) => `
@@ -397,43 +279,106 @@ function regionTreeBlock(r) {
   treeKnownPods[r.id] = new Set(pods.map((p) => p.name));
   treeRendered.add(r.id);
 
+  return `<div class="apptree-scroll"><div class="apptree">${ingressHtml}${deployHtml}${rsHtml}${podsHtml}</div></div>`;
+}
+
+function auxRow(reachable) {
+  const off = reachable ? '' : 'aux-off';
   return `
-    <div class="tree-region-block ${r.is_self ? 'blk-self' : ''}">
-      <div class="tree-region-head">
-        <span class="tnode-dot ok"></span>
-        <span class="tree-region-title">${esc(label)}</span>${roleTag}
-        <span class="tree-region-status ok">파드 ${pods.length}개</span>
-      </div>
-      <div class="apptree-scroll"><div class="apptree">${deployHtml}${rsHtml}${podsHtml}</div></div>
+    <div class="lane-aux">
+      <span class="aux-chip ${off}">🗄️ Redis <i>기록실(리더보드)</i></span>
+      <span class="aux-chip ${off}">📊 모니터링 <i>Prometheus·Grafana·Alertmanager</i></span>
+      <span class="aux-chip ${off}">🧰 Jenkins <i>CI · 빌드→서명→커밋</i></span>
+      <span class="aux-chip ${off}">🔄 ArgoCD <i>CD · GitOps·selfHeal</i></span>
     </div>`;
 }
 
-function renderTreeAll(data) {
-  const wrap = document.getElementById('apptree-wrap');
-  const badge = document.getElementById('tree-region');
-  const regions = data.regions || [];
+function regionLane(r) {
+  const label = REGION_LABEL[r.id] || r.id;
+  const roleTag = r.is_self
+    ? '<span class="lane-role role-self">현재 리전</span>'
+    : '<span class="lane-role">원격</span>';
+  const servingBadge = r.serving ? '<span class="lane-serving">▶ 현재 트래픽</span>' : '';
 
-  if (!regions.length) {
-    wrap.innerHTML = '<div class="apptree-empty">표시할 리전이 없습니다.</div>';
+  // reachable true→false 전환에만 플래시
+  const prev = infraLastReachable[r.id];
+  const flash = (prev === true && r.reachable === false) ? 'flash-down' : '';
+  infraLastReachable[r.id] = r.reachable;
+
+  const stateCls = [
+    r.is_self ? 'lane-self' : '',
+    r.reachable ? 'lane-up' : 'lane-down',
+    r.serving ? 'lane-serving-on' : '',
+    flash,
+  ].join(' ');
+
+  let body;
+  let podCount = 0;
+  if (!r.reachable) {
+    body = '<div class="apptree-empty">이 리전이 응답하지 않습니다. (Ingress / 파드 도달 불가)</div>';
+  } else if (!r.topo || !r.topo.deployment) {
+    body = '<div class="apptree-empty">트리를 불러오는 중…</div>';
+  } else {
+    body = serviceFlow(r);
+    podCount = (r.topo.replicasets || []).flatMap((x) => x.pods).length;
+  }
+
+  const status = r.reachable
+    ? `<span class="lane-status ok">파드 ${podCount}개 · 정상</span>`
+    : '<span class="lane-status bad">응답 없음</span>';
+
+  return `
+    <div class="region-lane ${stateCls}">
+      <div class="lane-head">
+        <span class="tnode-dot ${r.reachable ? 'ok' : 'bad'}"></span>
+        <span class="lane-title">☸️ ${esc(label)}</span>${roleTag}${servingBadge}${status}
+      </div>
+      ${body}
+      ${auxRow(r.reachable)}
+    </div>`;
+}
+
+function renderInfraFlow(reg, topo) {
+  const flow = document.getElementById('infra-flow');
+
+  if (!reg.available) {
+    renderGslbStrip(null);
+    document.getElementById('gslb-hint').innerText = '이 클러스터엔 아직 REGIONS_JSON이 설정되지 않았어요.';
+    flow.innerHTML = '<div class="apptree-empty">REGIONS_JSON 미설정 — 리전 목록이 비어 있습니다.</div>';
     return;
   }
-  badge.innerText = regions.map((r) => (REGION_LABEL[r.id] || r.id).split(' · ')[0]).join(' · ');
-  wrap.innerHTML = regions.map(regionTreeBlock).join('');
-}
 
-async function refreshTree() {
-  try {
-    const res = await fetch('/api/topology/all');
-    renderTreeAll(await res.json());
-  } catch (e) {
-    document.getElementById('apptree-wrap').innerHTML =
-      '<div class="apptree-empty">⚠ 트리를 불러오지 못했습니다.</div>';
+  renderGslbStrip(reg.gslb_target);
+
+  const topoMap = {};
+  (topo.regions || []).forEach((t) => { topoMap[t.id] = t; });
+
+  const regions = reg.regions || [];
+  flow.innerHTML = regions.map((rr) => regionLane({
+    id: rr.id,
+    label: rr.label,
+    reachable: rr.reachable,
+    is_self: rr.is_self,
+    serving: reg.gslb_target === rr.id,
+    topo: topoMap[rr.id],
+  })).join('');
+
+  if (reg.checked_at) {
+    document.getElementById('infra-checked-at').innerText = '마지막 확인: ' + reg.checked_at;
   }
 }
 
-setInterval(refreshRegions, 5000);
-refreshRegions();
-setInterval(refreshTree, 5000);
-refreshTree();
+async function refreshInfra() {
+  try {
+    const [a, b] = await Promise.all([fetch('/api/regions'), fetch('/api/topology/all')]);
+    renderInfraFlow(await a.json(), await b.json());
+  } catch (e) {
+    document.getElementById('infra-flow').innerHTML =
+      '<div class="apptree-empty">⚠ 인프라 상태를 불러오지 못했습니다.</div>';
+  }
+}
+
+setInterval(refreshInfra, 5000);
+refreshInfra();
 </script>
 {% endblock %}

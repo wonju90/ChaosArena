@@ -1309,8 +1309,10 @@ GSLB 배지는 조금 더 늦게 반대편으로 넘어갑니다 — 이 시차 
 ### 22.7 chaos-demo 애플리케이션 트리 — 권한을 늘리지 않고 ArgoCD식 트리를 복원하다
 
 ArgoCD의 Application Details Tree처럼 `Deployment → ReplicaSet → Pod` 계층을 실시간으로
-보여주는 패널을 `/infra`에 추가했다. 파드를 스케일(HPA 3→6)하면 트리 오른쪽에 새 파드 노드가
-5초 폴링마다 돋아난다.
+보여준다. 파드를 스케일(HPA 3→6)하면 트리 오른쪽에 새 파드 노드가 5초 폴링마다 돋아난다.
+최종적으로는 이 트리를 별도 패널이 아니라 **`/infra`의 단일 '전체 인프라 흐름' 다이어그램**에
+녹여 넣었다 — `GSLB → 리전 → Ingress → chaos-demo(Deployment→ReplicaSet→Pod) → Redis·모니터링·
+CI/CD`를 한 화면에 이어 그리고, 판교·평촌 두 리전을 같은 디테일의 레인으로 나란히 보여준다.
 
 **핵심 결정 — RBAC를 확장하지 않았다.** 이 트리를 그리려면 얼핏 Deployment·ReplicaSet 조회
 권한이 필요해 보이지만, 대시보드 ServiceAccount(`k8s/rbac.yaml`)에는 그 권한을 주지 않았다.

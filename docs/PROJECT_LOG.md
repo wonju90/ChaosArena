@@ -788,10 +788,16 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   `/api/topology/all`이 KR1(self, 6개)·KR2(원격, 3개) 두 리전을 모두 반환하고, 헤드리스 Chrome
   스크린샷으로 두 리전 트리가 각각 `deploy(CPU%, HPA 3→6) → rs → pod×N`으로 세로로 쌓여 펼쳐지는
   것, 현재 리전 블록이 파란 테두리로 구분되는 것, 새 파드에만 1회성 fade-in이 적용되는 것 확인.
+- **최종 형태 — 단일 통합 흐름도**: 처음엔 (리전 카드 목록) + (별도 트리 패널)로 나뉘어 있었는데,
+  "여러 개가 아니라 전체 인프라가 하나로 보이게" 요청에 따라 `/infra`를 **하나의 '전체 인프라
+  흐름' 패널**로 재구성했다: `GSLB → 리전(판교/평촌) → Ingress → chaos-demo(Deployment→
+  ReplicaSet→Pod) → Redis·모니터링·CI/CD`를 한 다이어그램에 담고, 판교·평촌을 세로 레인으로 쌓아
+  둘 다 같은 디테일로 표현. 트래픽 받는 리전은 파란 테두리로 강조, 죽은 리전 레인은 빨갛게 저하.
 - **변경 파일**: `app.py`(`build_topology`/`build_mock_topology`/`build_mock_topology_all`/
   `format_pod_age`/`container_ready_str` 헬퍼, `_fetch_region_topology`/`_self_topology`/
   `_build_topology_snapshot` + `_refresh_regions_loop`에 토폴로지 캐시 추가, `GET /api/topology`(1차)
-  · `GET /api/topology/all`(통합)), `templates/infra.html`(리전별 트리 블록 + 커넥터 CSS + 폴링 렌더러).
+  · `GET /api/topology/all`(통합)), `templates/infra.html`(GSLB+두 리전 레인을 하나로 합친 흐름도 —
+  Ingress→deploy→rs→pod 서비스 경로 + Redis/모니터링/CI·CD 부속 노드 + 커넥터 CSS + 폴링 렌더러).
 - **라이브 검증 대기**: 실배포 후 실제 HPA 스케일아웃(부하 → 3→6) 시 두 리전 트리가 함께 뜨고
   한쪽 리전을 내리면 그 블록만 "응답 없음"으로 바뀌는 것 확인 예정.
 

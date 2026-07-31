@@ -765,6 +765,28 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   스레드, `GET /api/regions`, `GET /infra`), `templates/infra.html`(신규), `templates/base.html`
   (사이드바/모바일 내비게이션에 "인프라 지도" 탭 추가).
 
+### 4.36 chaos-demo 애플리케이션 트리 — 권한 확장 없이 ArgoCD식 트리 복원 ⭐
+
+- **배경**: `/infra`의 리전 카드는 리전 단위 상태(초록/빨강)만 보여줘서, "파드를 스케일하면 구조가
+  디테일하게 펼쳐지는" ArgoCD의 Application Details Tree 같은 그림을 원한다는 요청이 들어왔다.
+- **핵심 결정 — RBAC를 늘리지 않았다**: `Deployment → ReplicaSet → Pod` 트리를 그리려면 얼핏
+  Deployment/ReplicaSet 조회 권한이 필요해 보이지만, 대시보드 SA(`k8s/rbac.yaml`)에는 그 권한을
+  주지 않고 **이미 있는 파드 조회 권한만으로 트리를 역복원**했다. 각 파드의 `ownerReferences`(소속
+  ReplicaSet)와 `pod-template-hash` 라벨로 RS 그룹을 재구성하고, desired 수·CPU%만 HPA(get 권한
+  기존 보유)에서 가져온다. 옛 RS는 파드가 0개라 자연히 안 잡힌다. → 최소 권한 원칙(21절)을 시각화
+  기능에서도 유지.
+- **스코프**: 앱은 자기 클러스터 파드만 조회 가능(상대 리전 kubeconfig도 최소 권한상 미부여)이라,
+  상세 트리는 GSLB가 트래픽을 보내는 **서빙 리전 하나**에 대해서만 그린다. 스케일 테스트는 그
+  리전에서 하므로 데모에 정확히 맞는다.
+- **로컬 검증 완료(실측)**: `LOCAL_MODE`에서 `/chaos/cpu` 토글로 목업 HPA를 3→6으로 올려
+  `/api/topology`가 파드 6개(새 3개는 age가 15~45s로 갓 뜬 것처럼 표기)로 늘고, 헤드리스 Chrome
+  스크린샷으로 트리가 ArgoCD처럼 `deploy(CPU 88%/50%, HPA 3→6) → rs(6/6 ready) → pod×6`으로
+  펼쳐지는 것, 3개 기본 상태에서도 레이아웃이 깨지지 않는 것 확인. 새 파드에만 1회성 fade-in
+  적용(리전 카드 플래시와 같은 "변화 시점만 감지" 관용구).
+- **변경 파일**: `app.py`(`build_topology`/`build_mock_topology`/`format_pod_age`/`container_ready_str`
+  헬퍼, `GET /api/topology`), `templates/infra.html`(트리 패널 + 커넥터 CSS + 폴링 렌더러).
+- **라이브 검증 대기**: 실배포 후 실제 HPA 스케일아웃(부하 → 3→6) 시 트리가 자라는 것 확인 예정.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.

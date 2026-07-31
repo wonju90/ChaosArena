@@ -58,6 +58,73 @@
   .region-row-sub { font-size: 10.8px; color: #64748b; }
 
   .infra-checked-at { font-size: 11px; color: #64748b; text-align: right; margin-top: 4px; }
+
+  /* ── chaos-demo 애플리케이션 트리 (ArgoCD Application Details Tree 재현) ── */
+  .tree-region-badge {
+    font-size: 11px; font-weight: 700; color: #38bdf8;
+    background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.30);
+    padding: 3px 10px; border-radius: 999px; margin-left: auto;
+  }
+  .apptree-scroll { overflow-x: auto; padding: 10px 4px 4px; }
+  .apptree {
+    display: flex; flex-direction: row; align-items: center; gap: 34px;
+    min-width: max-content;
+  }
+  .tier { display: flex; flex-direction: column; justify-content: center; gap: 12px; position: relative; }
+
+  .tnode {
+    position: relative; border-radius: 11px; padding: 10px 13px; background: #0e1626;
+    border: 1.5px solid rgba(148,163,184,0.16); min-width: 178px;
+    transition: border-color 0.35s ease, box-shadow 0.35s ease, opacity 0.4s ease, transform 0.4s ease;
+  }
+  .tnode-head { display: flex; align-items: center; gap: 8px; }
+  .tnode-kind {
+    font-size: 9.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+    color: #64748b; background: rgba(148,163,184,0.12); padding: 2px 6px; border-radius: 5px; flex: none;
+  }
+  .tnode-title { font-size: 12.5px; font-weight: 700; color: #e8eef7; word-break: break-all; line-height: 1.35; }
+  .tnode-meta { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .tnode-chip {
+    font-size: 10px; font-weight: 700; color: #9fb0c6;
+    background: rgba(148,163,184,0.10); padding: 2px 7px; border-radius: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .tnode-chip.chip-cpu { color: #fbbf24; background: rgba(251,191,36,0.12); }
+
+  .tnode-dot { width: 9px; height: 9px; border-radius: 50%; background: #334155; flex: none; }
+  .tnode-dot.ok { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.55); }
+  .tnode-dot.bad { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.55); }
+  .tnode-dot.warn { background: #fbbf24; box-shadow: 0 0 8px rgba(251,191,36,0.55); }
+
+  .tnode.node-deploy { border-color: rgba(56,189,248,0.35); }
+  .tnode.node-pod { min-width: 210px; }
+  .tnode.tpod-new { animation: tpod-in 0.55s ease-out; }
+  @keyframes tpod-in {
+    0% { opacity: 0; transform: translateX(-10px) scale(0.94); border-color: rgba(34,197,94,0.9); }
+    100% { opacity: 1; transform: none; }
+  }
+
+  /* 커넥터 라인 */
+  .tier-rs > .tnode::before {
+    content: ''; position: absolute; left: -34px; top: 50%; width: 34px; height: 2px;
+    background: #2b3a52;
+  }
+  .tier-rs > .tnode::after {
+    content: ''; position: absolute; right: -17px; top: 50%; width: 17px; height: 2px;
+    background: #2b3a52;
+  }
+  .tier-pods { position: relative; }
+  .tier-pods::before {
+    content: ''; position: absolute; left: -17px; top: 26px; bottom: 26px; width: 2px;
+    background: #2b3a52;
+  }
+  .tier-pods.single-pod::before { display: none; }
+  .tier-pods > .tnode::before {
+    content: ''; position: absolute; left: -17px; top: 50%; width: 17px; height: 2px;
+    background: #2b3a52;
+  }
+
+  .apptree-empty { font-size: 12.5px; color: #8593a8; padding: 14px 4px; }
 {% endblock %}
 
 {% block content %}
@@ -121,6 +188,20 @@
         </div>
       </div>
       {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="flex items-center gap-2">
+      <h2 class="panel-title" style="margin:0">{{ ic.i('box') }} chaos-demo 애플리케이션 트리</h2>
+      <span id="tree-region" class="tree-region-badge">확인 중…</span>
+    </div>
+    <div class="text-[11px] text-faint mb-1">
+      Deployment → ReplicaSet → Pod · <b>지금 트래픽을 받는 리전</b>의 실시간 구조 (5초 갱신).
+      파드를 스케일하면(HPA 3→6) 오른쪽에 새 파드가 실시간으로 돋아납니다.
+    </div>
+    <div id="apptree-wrap" class="apptree-scroll">
+      <div class="apptree-empty">불러오는 중…</div>
     </div>
   </div>
 
@@ -201,7 +282,112 @@ async function refreshRegions() {
   }
 }
 
+// ── chaos-demo 애플리케이션 트리 ───────────────────────────────────────────
+const REGION_LABEL = { kr1: 'KR1 · 판교', kr2: 'KR2 · 평촌' };
+// 직전 폴링에 존재하던 파드 이름 집합 — 새로 등장한 파드에만 1회성 fade-in을 준다
+// (region 카드 플래시와 같은 "변화 시점만 감지" 관용구).
+let treeKnownPods = new Set();
+let treeFirstRender = true;
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function podNode(pod) {
+  const isNew = !treeFirstRender && !treeKnownPods.has(pod.name);
+  const dotCls = pod.ready ? 'ok' : (pod.phase === 'Running' ? 'warn' : 'bad');
+  return `
+    <div class="tnode node-pod ${isNew ? 'tpod-new' : ''}">
+      <div class="tnode-head">
+        <span class="tnode-dot ${dotCls}"></span>
+        <span class="tnode-kind">pod</span>
+      </div>
+      <div class="tnode-title" style="margin-top:6px">${esc(pod.name)}</div>
+      <div class="tnode-meta">
+        <span class="tnode-chip">${esc(pod.containers)}</span>
+        <span class="tnode-chip">${esc(pod.phase)}</span>
+        <span class="tnode-chip">🖥 ${esc(pod.node)}</span>
+        <span class="tnode-chip">⏱ ${esc(pod.age)}</span>
+      </div>
+    </div>`;
+}
+
+function renderTree(data) {
+  const wrap = document.getElementById('apptree-wrap');
+  const badge = document.getElementById('tree-region');
+
+  if (!data.available) {
+    badge.innerText = '표시 불가';
+    wrap.innerHTML = `<div class="apptree-empty">⚠ 이 클러스터의 트리를 불러오지 못했습니다. (${esc(data.error || '알 수 없음')})</div>`;
+    return;
+  }
+
+  badge.innerText = REGION_LABEL[data.region] || data.region || '';
+
+  const d = data.deployment;
+  const rss = data.replicasets || [];
+  const pods = rss.flatMap((rs) => rs.pods);
+
+  // Deployment 노드 (+ HPA 정보 배지)
+  const deployChips = [`목표 ${d.desired} · 현재 ${d.current}`];
+  if (d.hpa_available) {
+    deployChips.push(`HPA ${d.min}→${d.max}`);
+    if (d.cpu_percent !== null && d.cpu_percent !== undefined) {
+      deployChips.push(`<span class="tnode-chip chip-cpu">CPU ${d.cpu_percent}% / ${d.target_cpu_percent}%</span>`);
+    }
+  }
+  const deployHtml = `
+    <div class="tier tier-deploy">
+      <div class="tnode node-deploy">
+        <div class="tnode-head">
+          <span class="tnode-dot ${d.current >= d.desired ? 'ok' : 'warn'}"></span>
+          <span class="tnode-kind">deploy</span>
+          <span class="tnode-title" style="font-size:13px">${esc(d.name)}</span>
+        </div>
+        <div class="tnode-meta">
+          ${deployChips.map((c) => (c.startsWith('<') ? c : `<span class="tnode-chip">${c}</span>`)).join('')}
+        </div>
+      </div>
+    </div>`;
+
+  // ReplicaSet 노드(들) — 보통 1개, 롤아웃 중엔 잠깐 2개
+  const rsHtml = `
+    <div class="tier tier-rs">
+      ${rss.map((rs) => `
+        <div class="tnode node-rs">
+          <div class="tnode-head">
+            <span class="tnode-dot ${rs.ready >= rs.total && rs.total > 0 ? 'ok' : 'warn'}"></span>
+            <span class="tnode-kind">rs</span>
+          </div>
+          <div class="tnode-title" style="margin-top:6px">${esc(rs.name)}</div>
+          <div class="tnode-meta"><span class="tnode-chip">${rs.ready}/${rs.total} ready</span></div>
+        </div>`).join('')}
+    </div>`;
+
+  const podsHtml = `
+    <div class="tier tier-pods ${pods.length <= 1 ? 'single-pod' : ''}">
+      ${pods.map(podNode).join('')}
+    </div>`;
+
+  wrap.innerHTML = `<div class="apptree">${deployHtml}${rsHtml}${podsHtml}</div>`;
+
+  treeKnownPods = new Set(pods.map((p) => p.name));
+  treeFirstRender = false;
+}
+
+async function refreshTree() {
+  try {
+    const res = await fetch('/api/topology');
+    renderTree(await res.json());
+  } catch (e) {
+    document.getElementById('apptree-wrap').innerHTML =
+      '<div class="apptree-empty">⚠ 트리를 불러오지 못했습니다.</div>';
+  }
+}
+
 setInterval(refreshRegions, 5000);
 refreshRegions();
+setInterval(refreshTree, 5000);
+refreshTree();
 </script>
 {% endblock %}

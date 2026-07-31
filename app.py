@@ -20,6 +20,7 @@ LOCAL_MODE:
 import os
 import json
 import time
+import datetime
 import random
 import threading
 from collections import deque
@@ -407,6 +408,139 @@ def build_mock_pods():
     return pods
 
 
+def format_pod_age(created):
+    """creation_timestamp(tz-aware datetime)로부터 사람이 읽는 age 문자열(예: 28m, 3h, 6d)을 만든다."""
+    if created is None:
+        return "?"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    secs = max(0, int((now - created).total_seconds()))
+    if secs < 60:
+        return f"{secs}s"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}m"
+    hours = mins // 60
+    if hours < 24:
+        return f"{hours}h"
+    return f"{hours // 24}d"
+
+
+def container_ready_str(pod):
+    """'1/1'처럼 (Ready 컨테이너 수)/(전체 컨테이너 수) 문자열을 만든다 (ArgoCD 파드 배지와 같은 표기)."""
+    statuses = pod.status.container_statuses or []
+    total = len(statuses)
+    ready = sum(1 for c in statuses if c.ready)
+    return f"{ready}/{total}" if total else "0/0"
+
+
+def build_topology(v1, autoscaling_v2):
+    """
+    chaos-demo의 Deployment -> ReplicaSet -> Pod 트리를 '파드 조회 권한만으로' 재구성한다.
+    각 파드의 ownerReferences(어느 ReplicaSet 소속인지)와 pod-template-hash 라벨을 이용하므로,
+    Deployment/ReplicaSet read 권한을 추가로 주지 않고도 ArgoCD식 트리를 그릴 수 있다
+    (k8s/rbac.yaml의 최소 권한 원칙 유지). desired 목표 수와 CPU만 HPA(get 권한 있음)에서 가져온다.
+    """
+    pods = get_chaos_pods(v1)
+
+    rs_map = {}  # rs_name -> {"name", "hash", "pods":[...]}
+    for pod in pods:
+        rs_name = None
+        for ref in (pod.metadata.owner_references or []):
+            if ref.kind == "ReplicaSet":
+                rs_name = ref.name
+                break
+        template_hash = (pod.metadata.labels or {}).get("pod-template-hash", "")
+        rs_name = rs_name or (f"chaos-demo-{template_hash}" if template_hash else "chaos-demo-(unknown)")
+
+        bucket = rs_map.setdefault(rs_name, {"name": rs_name, "hash": template_hash, "pods": []})
+        bucket["pods"].append(
+            {
+                "name": pod.metadata.name,
+                "node": pod.spec.node_name or "미배정",
+                "phase": pod.status.phase,
+                "ready": is_pod_ready(pod),
+                "containers": container_ready_str(pod),
+                "age": format_pod_age(pod.metadata.creation_timestamp),
+            }
+        )
+
+    replicasets = []
+    for rs in rs_map.values():
+        rs["pods"].sort(key=lambda p: p["name"])
+        rs["ready"] = sum(1 for p in rs["pods"] if p["ready"])
+        rs["total"] = len(rs["pods"])
+        replicasets.append(rs)
+    replicasets.sort(key=lambda r: r["name"])
+
+    # HPA는 있으면 desired/min/max/cpu를 얹고, 없는 클러스터(404)면 파드 수로 우아하게 저하한다.
+    deployment = {
+        "name": "chaos-demo",
+        "current": len(pods),
+        "desired": len(pods),
+        "min": None,
+        "max": None,
+        "cpu_percent": None,
+        "target_cpu_percent": None,
+        "hpa_available": False,
+    }
+    try:
+        hpa = get_hpa_status(autoscaling_v2)
+        deployment.update(
+            {
+                "desired": hpa["desired_replicas"] if hpa["desired_replicas"] is not None else len(pods),
+                "current": hpa["current_replicas"] if hpa["current_replicas"] is not None else len(pods),
+                "min": hpa["min_replicas"],
+                "max": hpa["max_replicas"],
+                "cpu_percent": hpa["current_cpu_percent"],
+                "target_cpu_percent": hpa["target_cpu_percent"],
+                "hpa_available": True,
+            }
+        )
+    except (ApiException, config.ConfigException):
+        pass
+
+    return {"deployment": deployment, "replicasets": replicasets}
+
+
+def build_mock_topology():
+    """
+    LOCAL_MODE용 가짜 토폴로지. CPU 부하 버튼(chaos_state['cpu_load'])이 켜지면 파드가 3->6으로
+    늘어난 것처럼 보여줘서, 실제 클러스터 없이도 트리가 자라나는 화면을 확인할 수 있다
+    (build_mock_hpa와 같은 chaos_state 연동).
+    """
+    hpa = build_mock_hpa()
+    n = hpa["desired_replicas"]
+    rs_name = "chaos-demo-5496cb74ff"
+    suffixes = ["nxtc9", "qqw7x", "zd5vr", "8xk2p", "m4rtl", "b9wcs"]
+    pods = []
+    for i in range(n):
+        pods.append(
+            {
+                "name": f"{rs_name}-{suffixes[i]}",
+                "node": f"local-node-{(i % 3) + 1}",
+                "phase": "Running",
+                "ready": True,
+                "containers": "1/1",
+                "age": f"{28 - i * 4}m" if i < 3 else f"{(i - 2) * 15}s",
+            }
+        )
+    return {
+        "deployment": {
+            "name": "chaos-demo",
+            "current": hpa["current_replicas"],
+            "desired": hpa["desired_replicas"],
+            "min": hpa["min_replicas"],
+            "max": hpa["max_replicas"],
+            "cpu_percent": hpa["current_cpu_percent"],
+            "target_cpu_percent": hpa["target_cpu_percent"],
+            "hpa_available": True,
+        },
+        "replicasets": [
+            {"name": rs_name, "hash": "5496cb74ff", "ready": len(pods), "total": len(pods), "pods": pods}
+        ],
+    }
+
+
 def build_mock_deploy_history():
     """LOCAL_MODE용 가짜 배포 히스토리 — 성공 이벤트 몇 개 + 롤백 1건을 섞어 화면 확인용으로 보여준다."""
     return [
@@ -775,6 +909,28 @@ def api_regions():
         return jsonify({"available": False})
 
     return jsonify({"available": True, **_regions_cache})
+
+
+@app.route("/api/topology")
+def api_topology():
+    """
+    인프라 지도(/infra)의 'chaos-demo 애플리케이션 트리'용 — 이 앱이 떠 있는 클러스터(=지금
+    트래픽을 받는 리전)의 Deployment -> ReplicaSet -> Pod 계층을 실시간으로 돌려준다.
+    파드 조회 권한만으로 재구성하며(build_topology 참고), 상대 리전의 트리는 크로스리전
+    크레덴셜이 없어(=최소 권한 원칙) 표시하지 않는다 - self 리전 카드에서만 트리가 펼쳐진다.
+    """
+    checked = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if LOCAL_MODE:
+        return jsonify({"available": True, "region": APP_VERSION, "checked_at": checked, **build_mock_topology()})
+
+    try:
+        v1 = get_k8s_client()
+        v2 = get_autoscaling_client()
+        topo = build_topology(v1, v2)
+    except (ApiException, config.ConfigException) as e:
+        return jsonify({"available": False, "error": f"쿠버네티스 API 호출 실패: {describe_k8s_error(e)}"})
+
+    return jsonify({"available": True, "region": APP_VERSION, "checked_at": checked, **topo})
 
 
 @app.route("/api/deploy-history")

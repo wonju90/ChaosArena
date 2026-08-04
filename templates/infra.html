@@ -33,14 +33,14 @@
   /* GSLB에서 두 리전으로 갈라지는 짧은 세로 커넥터 */
   .flow-branch { width: 2px; height: 18px; background: #2b3a52; margin: 0 auto; }
 
-  /* ── 리전 레인 (판교/평촌을 좌우 2열로 나란히 — 한눈에 대칭으로 보이게) ── */
+  /* ── 리전 레인 (판교/평촌을 좌우 2열로 나란히) ── */
   .lane-list { display: grid; grid-template-columns: 1fr; gap: 12px; }
   @media (min-width: 1100px) { .lane-list { grid-template-columns: 1fr 1fr; } }
   .region-lane {
-    border-radius: 14px; padding: 13px 15px; background: #0b1220;
+    border-radius: 14px; padding: 14px 16px 16px; background: #0b1220;
     border: 1.5px solid rgba(148,163,184,0.14);
     transition: border-color 0.4s ease, background 0.4s ease, box-shadow 0.4s ease;
-    min-width: 0;  /* 그리드 셀 안에서 넓은 트리가 셀을 넘겨 늘리지 않고, 레인 내부에서 가로 스크롤되게 */
+    min-width: 0;
   }
   .region-lane.lane-up { border-color: rgba(34,197,94,0.28); }
   .region-lane.lane-down { border-color: rgba(239,68,68,0.55); background: rgba(239,68,68,0.06); }
@@ -50,7 +50,7 @@
     0% { background: rgba(239,68,68,0.35); } 100% { background: rgba(239,68,68,0.06); }
   }
 
-  .lane-head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+  .lane-head { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
   .lane-title { font-size: 14.5px; font-weight: 800; color: #e8eef7; }
   .lane-role {
     font-size: 9.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
@@ -66,62 +66,99 @@
   .lane-status.ok { color: #4ade80; }
   .lane-status.bad { color: #f87171; }
 
-  /* ── 서비스 경로: Ingress → deploy → rs (가로 흐름), 그 아래 파드 그리드 ── */
-  .svc-flow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .flow-arrow { color: #475569; font-size: 16px; flex: none; }
-
-  .tnode {
-    position: relative; border-radius: 11px; padding: 10px 13px; background: #0e1626;
-    border: 1.5px solid rgba(148,163,184,0.16); min-width: 150px;
-    transition: border-color 0.35s ease, box-shadow 0.35s ease, opacity 0.4s ease, transform 0.4s ease;
-  }
-  .tnode-head { display: flex; align-items: center; gap: 8px; }
-  .tnode-kind {
-    font-size: 9.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
-    color: #64748b; background: rgba(148,163,184,0.12); padding: 2px 6px; border-radius: 5px; flex: none;
-  }
-  .tnode-title { font-size: 12.5px; font-weight: 700; color: #e8eef7; word-break: break-all; line-height: 1.35; }
-  .tnode-meta { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 5px; }
-  .tnode-chip {
-    font-size: 10px; font-weight: 700; color: #9fb0c6;
-    background: rgba(148,163,184,0.10); padding: 2px 7px; border-radius: 6px;
-    font-variant-numeric: tabular-nums;
-  }
-  .tnode-chip.chip-cpu { color: #fbbf24; background: rgba(251,191,36,0.12); }
-
   .tnode-dot { width: 9px; height: 9px; border-radius: 50%; background: #334155; flex: none; }
   .tnode-dot.ok { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.55); }
   .tnode-dot.bad { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.55); }
   .tnode-dot.warn { background: #fbbf24; box-shadow: 0 0 8px rgba(251,191,36,0.55); }
 
-  .tnode.node-ingress { border-color: rgba(148,163,184,0.22); }
-  .tnode.node-deploy { border-color: rgba(56,189,248,0.35); }
-  .tnode.node-pod { min-width: 0; }
-  .tnode.tpod-new { animation: tpod-in 0.55s ease-out; }
+  /* ── 파이프라인: Ingress → Deploy(허브) → RS → Pod (세로 흐름, 위계 뚜렷하게) ── */
+  .pipe { display: flex; flex-direction: column; align-items: center; }
+  .pipe-connector { width: 2px; height: 16px; background: #2b3a52; flex: none; }
+
+  .pipe-ingress {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 11px; font-weight: 700; color: #94a3b8;
+    background: rgba(148,163,184,0.07); border: 1px solid rgba(148,163,184,0.16);
+    padding: 5px 14px; border-radius: 999px;
+  }
+
+  /* Deploy = 이 파이프라인의 허브. 가장 크고, 유일하게 강조 배경을 가진다 */
+  .pipe-deploy {
+    width: 100%; max-width: 380px; box-sizing: border-box;
+    border-radius: 14px; padding: 14px 18px;
+    background: linear-gradient(160deg, rgba(56,189,248,0.14), rgba(56,189,248,0.03));
+    border: 1.5px solid rgba(56,189,248,0.38);
+  }
+  .pipe-deploy-head { display: flex; align-items: baseline; gap: 8px; }
+  .pipe-deploy-kind {
+    font-size: 9.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+    color: #7dd3fc; background: rgba(56,189,248,0.16); padding: 2px 6px; border-radius: 5px;
+  }
+  .pipe-deploy-name { font-size: 15px; font-weight: 800; color: #f1f6fc; }
+
+  .pipe-metric { margin-top: 11px; }
+  .pipe-metric + .pipe-metric { margin-top: 9px; }
+  .pipe-metric-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 10.5px; font-weight: 700; color: #93a4bb; margin-bottom: 4px;
+  }
+  .pipe-metric-row b { color: #dbe6f3; font-variant-numeric: tabular-nums; }
+  .pipe-bar { height: 6px; border-radius: 3px; background: rgba(148,163,184,0.14); overflow: hidden; }
+  .pipe-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease, background-color 0.4s ease; }
+  .pipe-bar-fill.lvl-ok { background: #38bdf8; }
+  .pipe-bar-fill.lvl-warn { background: #fbbf24; }
+  .pipe-bar-fill.lvl-bad { background: #f87171; }
+  .pipe-hpa-note { margin-top: 9px; font-size: 10px; font-weight: 700; color: #7dd3fc; text-align: right; }
+
+  .pipe-rs {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11.5px; font-weight: 700; color: #cdd7e6;
+    background: rgba(255,255,255,0.02); border: 1px solid rgba(148,163,184,0.14);
+    padding: 6px 14px; border-radius: 10px;
+  }
+  .pipe-rs b { color: #e8eef7; font-variant-numeric: tabular-nums; }
+
+  /* 파드 = RS 아래로 갈라지는 작고 흐린 잎. 가로 스크롤이라 폭에 관계없이 항상 한 줄로 접속선이 맞는다 */
+  .pod-fanout-scroll { width: 100%; overflow-x: auto; margin-top: 2px; }
+  .pod-fanout {
+    display: inline-flex; gap: 10px; padding-top: 14px; border-top: 2px solid #2b3a52;
+    min-width: 100%; justify-content: center; box-sizing: border-box;
+  }
+  .pod-chip {
+    position: relative; flex: none; display: flex; align-items: center; gap: 5px;
+    font-size: 10.5px; font-weight: 700; color: #93a4bb;
+    background: #0e1626; border: 1px solid rgba(148,163,184,0.15);
+    padding: 5px 10px; border-radius: 8px; cursor: default;
+    transition: opacity 0.4s ease, transform 0.4s ease, border-color 0.4s ease;
+  }
+  .pod-chip::before {
+    content: ''; position: absolute; top: -14px; left: 50%; width: 2px; height: 14px;
+    background: #2b3a52; transform: translateX(-50%);
+  }
+  .pod-chip.tpod-new { animation: tpod-in 0.55s ease-out; }
   @keyframes tpod-in {
-    0% { opacity: 0; transform: translateY(-8px) scale(0.94); border-color: rgba(34,197,94,0.9); }
+    0% { opacity: 0; transform: translateY(-6px) scale(0.9); border-color: rgba(34,197,94,0.9); }
     100% { opacity: 1; transform: none; }
   }
+  .pod-dot { width: 7px; height: 7px; border-radius: 50%; background: #334155; flex: none; }
+  .pod-dot.ok { background: #22c55e; }
+  .pod-dot.warn { background: #fbbf24; }
+  .pod-dot.bad { background: #ef4444; }
+  .pod-age { color: #5c6b81; font-weight: 600; }
 
-  /* ReplicaSet 아래 파드 그리드 — 좁은 반쪽 폭에서도 모든 파드가 한눈에 보이도록 감싼다 */
-  .pod-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(198px, 1fr)); gap: 10px;
-    margin-top: 14px; padding-top: 12px; border-top: 1px dashed rgba(148,163,184,0.12);
+  /* ── 리전 부속 컴포넌트 — 정적 정보라 허브보다 항상 흐리고 작게 ── */
+  .lane-aux {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;
+    margin-top: 16px; padding-top: 12px; border-top: 1px dashed rgba(148,163,184,0.10);
   }
-  .pod-grid-label { font-size: 11px; font-weight: 700; color: #64748b; margin: 14px 0 -4px; }
-
-  /* ── 리전 부속 컴포넌트 (Redis / 모니터링 / CI·CD) ── */
-  .lane-aux { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 11px; border-top: 1px dashed rgba(148,163,184,0.14); }
   .aux-chip {
-    display: flex; align-items: baseline; gap: 6px;
-    font-size: 11.5px; font-weight: 700; color: #cdd7e6;
-    background: rgba(255,255,255,0.02); border: 1px solid rgba(148,163,184,0.12);
-    padding: 6px 11px; border-radius: 9px;
+    font-size: 10.5px; font-weight: 700; color: #74839a;
+    background: rgba(255,255,255,0.015); border: 1px solid rgba(148,163,184,0.08);
+    padding: 4px 10px; border-radius: 7px;
   }
-  .aux-chip i { font-style: normal; font-size: 10px; font-weight: 600; color: #64748b; }
-  .aux-chip.aux-off { opacity: 0.4; }
+  .aux-chip.aux-off { opacity: 0.35; }
 
-  .apptree-empty { font-size: 12.5px; color: #8593a8; padding: 16px 4px; }
+  .apptree-empty { font-size: 12.5px; color: #8593a8; padding: 16px 4px; text-align: center; }
   .infra-checked-at { font-size: 11px; color: #64748b; text-align: right; margin-top: 4px; }
 {% endblock %}
 
@@ -141,7 +178,7 @@
     </div>
     <div class="text-[11px] text-faint mb-2">
       GSLB → 리전(판교/평촌) → Ingress → chaos-demo(Deployment→ReplicaSet→Pod) · Redis · 모니터링 · CI/CD
-      — 5초 갱신. 파드를 스케일하면(HPA 3→6) 해당 리전 흐름에 새 파드가 실시간으로 돋아납니다.
+      — 5초 갱신. 파드를 스케일하면(HPA 3→6) 해당 리전 파이프라인에 새 파드가 실시간으로 돋아납니다.
     </div>
 
     <!-- 글로벌 진입점: GSLB -->
@@ -193,88 +230,99 @@ function renderGslbStrip(gslbTarget) {
   else hint.innerText = '판정 중… (공개 도메인 응답을 아직 못 받았어요)';
 }
 
-function podNode(pod, regionId) {
+// 비율을 0~100 폭(%)과 상태 등급(ok/warn/bad)으로 변환 — 막대 색이 곧 상태를 말해준다.
+function barLevel(value, target) {
+  if (target <= 0) return 'ok';
+  if (value <= target) return 'ok';
+  if (value <= target * 1.6) return 'warn';
+  return 'bad';
+}
+
+function podChip(pod, regionId) {
   const known = treeKnownPods[regionId] || new Set();
   const isNew = treeRendered.has(regionId) && !known.has(pod.name);
   const dotCls = pod.ready ? 'ok' : (pod.phase === 'Running' ? 'warn' : 'bad');
+  const suffix = pod.name.split('-').pop();
+  const title = `${pod.name} · ${pod.containers} · ${pod.phase} · ${pod.node} · ${pod.age}`;
   return `
-    <div class="tnode node-pod ${isNew ? 'tpod-new' : ''}">
-      <div class="tnode-head">
-        <span class="tnode-dot ${dotCls}"></span>
-        <span class="tnode-kind">pod</span>
-      </div>
-      <div class="tnode-title" style="margin-top:6px">${esc(pod.name)}</div>
-      <div class="tnode-meta">
-        <span class="tnode-chip">${esc(pod.containers)}</span>
-        <span class="tnode-chip">${esc(pod.phase)}</span>
-        <span class="tnode-chip">🖥 ${esc(pod.node)}</span>
-        <span class="tnode-chip">⏱ ${esc(pod.age)}</span>
-      </div>
+    <div class="pod-chip ${isNew ? 'tpod-new' : ''}" title="${esc(title)}">
+      <span class="pod-dot ${dotCls}"></span>
+      <span>${esc(suffix)}</span>
+      <span class="pod-age">${esc(pod.age)}</span>
     </div>`;
 }
 
-// Ingress → deploy → rs 가로 흐름 + 그 아래 파드 그리드
-function serviceFlow(r) {
+// Ingress(작음) → Deploy(허브, 가장 큼) → RS(중간) → Pod(작고 흐린 잎) 세로 파이프라인
+function pipeFlow(r) {
   const d = r.topo.deployment;
   const rss = r.topo.replicasets || [];
   const pods = rss.flatMap((rs) => rs.pods);
-  const arrow = '<span class="flow-arrow">→</span>';
 
-  const ingressNode = `
-    <div class="tnode node-ingress">
-      <div class="tnode-head"><span class="tnode-dot ok"></span><span class="tnode-kind">svc</span></div>
-      <div class="tnode-title" style="margin-top:6px">Ingress-nginx</div>
-      <div class="tnode-meta"><span class="tnode-chip">포트 번호 없이 접속</span></div>
-    </div>`;
+  const ingressHtml = `<div class="pipe-ingress">🔀 Ingress-nginx</div>`;
 
-  const deployChips = [`목표 ${d.desired} · 현재 ${d.current}`];
-  if (d.hpa_available) {
-    deployChips.push(`HPA ${d.min}→${d.max}`);
-    if (d.cpu_percent !== null && d.cpu_percent !== undefined) {
-      deployChips.push(`<span class="tnode-chip chip-cpu">CPU ${d.cpu_percent}% / ${d.target_cpu_percent}%</span>`);
-    }
+  const readyPct = Math.min(100, (d.current / Math.max(1, d.desired)) * 100);
+  const readyLvl = d.current >= d.desired ? 'ok' : (d.current > 0 ? 'warn' : 'bad');
+
+  let cpuRow = '';
+  let hpaNote = '';
+  if (d.hpa_available && d.cpu_percent !== null && d.cpu_percent !== undefined) {
+    const cpuLvl = barLevel(d.cpu_percent, d.target_cpu_percent);
+    const cpuPct = Math.min(100, d.cpu_percent);
+    cpuRow = `
+      <div class="pipe-metric">
+        <div class="pipe-metric-row"><span>CPU 사용률</span><b>${d.cpu_percent}% / 목표 ${d.target_cpu_percent}%</b></div>
+        <div class="pipe-bar"><div class="pipe-bar-fill lvl-${cpuLvl}" style="width:${cpuPct}%"></div></div>
+      </div>`;
+    hpaNote = `<div class="pipe-hpa-note">HPA ${d.min} → ${d.max}</div>`;
   }
-  const deployNode = `
-    <div class="tnode node-deploy">
-      <div class="tnode-head">
-        <span class="tnode-dot ${d.current >= d.desired ? 'ok' : 'warn'}"></span>
-        <span class="tnode-kind">deploy</span>
-        <span class="tnode-title" style="font-size:13px">${esc(d.name)}</span>
+
+  const deployHtml = `
+    <div class="pipe-deploy">
+      <div class="pipe-deploy-head">
+        <span class="pipe-deploy-kind">deploy</span>
+        <span class="pipe-deploy-name">${esc(d.name)}</span>
       </div>
-      <div class="tnode-meta">
-        ${deployChips.map((c) => (c.startsWith('<') ? c : `<span class="tnode-chip">${c}</span>`)).join('')}
+      <div class="pipe-metric">
+        <div class="pipe-metric-row"><span>파드 스케일</span><b>현재 ${d.current} · 목표 ${d.desired}</b></div>
+        <div class="pipe-bar"><div class="pipe-bar-fill lvl-${readyLvl}" style="width:${readyPct}%"></div></div>
       </div>
+      ${cpuRow}
+      ${hpaNote}
     </div>`;
 
-  const rsNodes = rss.map((rs) => `
-    <div class="tnode node-rs">
-      <div class="tnode-head">
-        <span class="tnode-dot ${rs.ready >= rs.total && rs.total > 0 ? 'ok' : 'warn'}"></span>
-        <span class="tnode-kind">rs</span>
-      </div>
-      <div class="tnode-title" style="margin-top:6px">${esc(rs.name)}</div>
-      <div class="tnode-meta"><span class="tnode-chip">${rs.ready}/${rs.total} ready</span></div>
-    </div>`).join('<span class="flow-arrow">·</span>');
+  const rsHtml = rss.map((rs) => `
+    <div class="pipe-rs">
+      <span class="tnode-dot ${rs.ready >= rs.total && rs.total > 0 ? 'ok' : 'warn'}"></span>
+      ${esc(rs.name)} · <b>${rs.ready}/${rs.total}</b> ready
+    </div>`).join('');
 
-  const flowHtml = `<div class="svc-flow">${ingressNode}${arrow}${deployNode}${arrow}${rsNodes}</div>`;
-  const gridHtml = `
-    <div class="pod-grid-label">└ ReplicaSet의 파드 ${pods.length}개</div>
-    <div class="pod-grid">${pods.map((p) => podNode(p, r.id)).join('')}</div>`;
+  const podsHtml = `
+    <div class="pod-fanout-scroll">
+      <div class="pod-fanout">${pods.map((p) => podChip(p, r.id)).join('')}</div>
+    </div>`;
 
   treeKnownPods[r.id] = new Set(pods.map((p) => p.name));
   treeRendered.add(r.id);
 
-  return flowHtml + gridHtml;
+  return `
+    <div class="pipe">
+      ${ingressHtml}
+      <div class="pipe-connector"></div>
+      ${deployHtml}
+      <div class="pipe-connector"></div>
+      ${rsHtml}
+    </div>
+    ${podsHtml}`;
 }
 
 function auxRow(reachable) {
   const off = reachable ? '' : 'aux-off';
   return `
     <div class="lane-aux">
-      <span class="aux-chip ${off}">🗄️ Redis <i>기록실(리더보드)</i></span>
-      <span class="aux-chip ${off}">📊 모니터링 <i>Prometheus·Grafana·Alertmanager</i></span>
-      <span class="aux-chip ${off}">🧰 Jenkins <i>CI · 빌드→서명→커밋</i></span>
-      <span class="aux-chip ${off}">🔄 ArgoCD <i>CD · GitOps·selfHeal</i></span>
+      <span class="aux-chip ${off}" title="기록실(리더보드) · 리전 전용 인스턴스">🗄️ Redis</span>
+      <span class="aux-chip ${off}" title="Prometheus · Grafana · Alertmanager">📊 모니터링</span>
+      <span class="aux-chip ${off}" title="CI · 빌드 → 서명 → 매니페스트 커밋">🧰 Jenkins</span>
+      <span class="aux-chip ${off}" title="CD · GitOps Pull-Sync · selfHeal">🔄 ArgoCD</span>
     </div>`;
 }
 
@@ -291,7 +339,6 @@ function regionLane(r) {
   infraLastReachable[r.id] = r.reachable;
 
   const stateCls = [
-    r.is_self ? 'lane-self' : '',
     r.reachable ? 'lane-up' : 'lane-down',
     r.serving ? 'lane-serving-on' : '',
     flash,
@@ -302,9 +349,9 @@ function regionLane(r) {
   if (!r.reachable) {
     body = '<div class="apptree-empty">이 리전이 응답하지 않습니다. (Ingress / 파드 도달 불가)</div>';
   } else if (!r.topo || !r.topo.deployment) {
-    body = '<div class="apptree-empty">트리를 불러오는 중…</div>';
+    body = '<div class="apptree-empty">파이프라인을 불러오는 중…</div>';
   } else {
-    body = serviceFlow(r);
+    body = pipeFlow(r);
     podCount = (r.topo.replicasets || []).flatMap((x) => x.pods).length;
   }
 

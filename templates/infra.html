@@ -33,20 +33,23 @@
   /* GSLB에서 두 리전으로 갈라지는 커넥터 — 좁은 화면(리전이 세로로 쌓임)에선 직선 하나,
      넓은 화면(리전이 좌우 2열)에선 Y자로 갈라지는 바(파드 팬아웃과 같은 시각 문법 재사용).
      .lane-list와 똑같은 2열 그리드(gap도 동일)를 써서, 두 드롭 라인이 그 아래 리전 카드
-     중앙에 항상 정확히 겹치게 한다(퍼센트 폭으로 어림잡으면 카드 폭과 안 맞아 어긋난다). */
-  .flow-branch { width: 2px; height: 18px; background: #2b3a52; margin: 0 auto; }
+     중앙에 항상 정확히 겹치게 한다(퍼센트 폭으로 어림잡으면 카드 폭과 안 맞아 어긋난다).
+     색은 내부 트리 커넥터(#2b3a52)보다 밝게 — 실측해보니 선 자체는 전체 폭에 끊김없이
+     그려지고 있었는데, 배경(#0f1725 근처)과 대비가 낮아 안 보이는 것뿐이었다(정렬 문제가
+     아니라 가시성 문제). GSLB 테마 컬러(연한 하늘색)를 살짝 섞어 확실히 보이게 했다. */
+  .flow-branch { width: 2px; height: 18px; background: rgba(125,211,252,0.45); margin: 0 auto; }
   .flow-branch-fork { display: none; }
   @media (min-width: 1100px) {
     .flow-branch { display: none; }
     .flow-branch-fork {
       display: grid; grid-template-columns: 1fr 1fr; gap: 12px; position: relative;
-      border-top: 2px solid #2b3a52; padding-top: 14px;
+      border-top: 2px solid rgba(125,211,252,0.45); padding-top: 14px;
     }
     .flow-branch-fork::before {
       content: ''; position: absolute; top: -14px; left: 50%; width: 2px; height: 14px;
-      background: #2b3a52; transform: translateX(-50%);
+      background: rgba(125,211,252,0.45); transform: translateX(-50%);
     }
-    .flow-branch-drop { width: 2px; height: 14px; background: #2b3a52; margin: 0 auto; }
+    .flow-branch-drop { width: 2px; height: 14px; background: rgba(125,211,252,0.45); margin: 0 auto; }
   }
 
   /* ── 리전 레인 (판교/평촌을 좌우 2열로 나란히) ── */

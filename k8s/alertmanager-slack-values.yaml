@@ -12,6 +12,20 @@
 #     --set prometheus.service.type=NodePort --set prometheus.service.nodePorts.http=30090 \
 #     -f k8s/alertmanager-slack-values.yaml
 # ---------------------------------------------------------------------------
+# kube-prometheus-stack이 기본으로 심어주는 알림 규칙 중, 이 랩 클러스터(마스터 1대짜리
+# kubeadm 단일 클러스터) 구조상 "항상 참"이라 실제 장애 신호가 될 수 없는 그룹만 끈다.
+# - etcd: 멤버 수/쿼럼 관련 알림은 원래 다중 노드 HA etcd를 전제로 하는데, 여기는 단일 노드라
+#   etcdInsufficientMembers/etcdMembersDown이 상시 발생 - 끄는 게 맞다(HA로 바뀌면 다시 켜면 됨).
+# - kubeProxy: kubeadm 클러스터의 kube-proxy는 기본적으로 메트릭 포트가 127.0.0.1에 바인딩돼
+#   Prometheus가 스크랩할 수 없는 경우가 흔하다 - KubeProxyInstanceUnreachable은 실제 kube-proxy
+#   장애가 아니라 이 스크랩 불가 구조 때문에 상시 발생하는 것으로 확인됨.
+# 반대로 KubePodCrashLooping 등은 일부러 끄지 않는다 - 이 프로젝트(카오스 엔지니어링)에서는
+# 파드가 실제로 크래시루프에 빠지는 게 의미 있는 신호일 수 있기 때문이다.
+defaultRules:
+  rules:
+    etcd: false
+    kubeProxy: false
+
 alertmanager:
   alertmanagerSpec:
     # slack-webhook Secret을 /etc/alertmanager/secrets/slack-webhook/ 아래에 마운트

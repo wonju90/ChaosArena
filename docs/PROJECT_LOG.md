@@ -890,9 +890,34 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   `_build_alerts_snapshot`, `FAILOVER_LOG_KEY`/`_record_failover_transition`,
   `GET /api/alerts`·`/api/alerts/all`·`/api/failover-history`), `templates/infra.html`
   (Y자 분기선 CSS, `alertBadge`/`renderFailoverHistory` 렌더러).
-- **라이브 검증 대기**: Slack 한글화는 `helm upgrade`(두 리전) 필요, 알림 배지는
-  `ChaosArena-manifests`에 `ALERTMANAGER_URL` 1회 수동 반영 필요, 페일오버 이력은 이미 설정된
-  `REDIS_HOST` 그대로라 재배포 즉시 기록 시작(다음 페일오버 테스트부터 이력이 쌓임).
+- **라이브 검증 완료 — GSLB Y자 커넥터**: 실배포 후 "정렬이 깨져 보인다"는 피드백을 받았는데,
+  픽셀 스캔으로 실측한 결과 원인은 정렬이 아니라 **가시성**(색 대비가 낮아 안 보임)과 **끊김**
+  (`padding-top:14px`가 드롭 막대를 가로 바에서 16px 밀어내 허공에 떠 있었음) 두 가지였다.
+  후자가 진짜 버그, 전자는 착시였다 — 색을 밝게 바꿨다가(사용자가 "너무 굵고 밝다"고 재피드백)
+  다시 원래의 은은한 회색선으로 되돌리되, 끊김 수정(`padding-top:0`, 드롭 높이 28px)만 유지.
+  "화면이 이상해 보인다"는 피드백을 받으면 무엇이 문제인지 짐작하지 말고 스크린샷을 픽셀 단위로
+  스캔해 실측하는 게 왕복을 줄인다는 교훈.
+- **라이브 검증 완료 — Slack 한글화**: `helm upgrade`(KR1·KR2) 적용 후 실제 Slack에서
+  `etcdInsufficientMembers` → `[KR1] ⚠️ etcd 멤버 수 부족`로 정확히 번역돼 오는 것 확인.
+  다만 그사이 `etcdMembersDown`/`KubePodCrashLooping`/`KubeProxyInstanceUnreachable` 등 아직
+  번역 안 한 기본 알림이 계속 새로 튀어나와, "확인된 것만 하나씩 번역"은 두더지 잡기라는 게
+  드러남 → 아래 항목으로 이어짐.
+- **노이즈 알림 규칙 자체를 끄기(번역 대신 근본 해결)**: `KubeProxyInstanceUnreachable`/
+  `etcdMembersDown`이 계속 영어로 오는 걸 보고, 번역을 계속 추가하는 대신 **이 랩 클러스터
+  구조상 애초에 의미가 없는 규칙 자체를 껐다**. `defaultRules.rules.etcd: false` /
+  `defaultRules.rules.kubeProxy: false`(kube-prometheus-stack Helm 값)를 두 리전
+  values 파일에 추가 — etcd 관련 알림은 다중 노드 HA etcd를 전제하는데 여기는 마스터 1대짜리
+  단일 노드라 상시 발생할 수밖에 없고, kube-proxy는 kubeadm 클러스터 특유의 메트릭 바인딩
+  구조상 Prometheus가 애초에 스크랩을 못 해 "unreachable"이 상시 발생하는 것으로 확인됨 — 둘
+  다 실제 장애가 아니라 이 환경의 구조적 한계였다. 반대로 `KubePodCrashLooping`은 **의도적으로
+  끄지 않았다** — 카오스 엔지니어링 프로젝트에서 파드 크래시루프는 진짜 의미 있는 신호일 수
+  있기 때문(실제로 helm upgrade 직후 모니터링 파드들의 RESTARTS 수가 튄 것도 이 알림과 관련
+  있을 수 있음).
+- **변경 파일(추가)**: `k8s/alertmanager-slack-values.yaml`/`-kr1.yaml`에 `defaultRules.rules`
+  블록 추가.
+- **라이브 검증 대기**: 알림 배지는 `ChaosArena-manifests`에 `ALERTMANAGER_URL` 1회 수동 반영
+  필요(이미 진행), 노이즈 규칙 끄기는 두 리전 `helm upgrade` 재적용 필요, 페일오버 이력은 이미
+  설정된 `REDIS_HOST` 그대로라 재배포 즉시 기록 시작.
 
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.

@@ -14,6 +14,13 @@
 #     --set prometheus.service.type=NodePort --set prometheus.service.nodePorts.http=30090 \
 #     -f k8s/alertmanager-slack-values-kr1.yaml
 # ---------------------------------------------------------------------------
+# 노이즈 규칙 끄는 이유는 k8s/alertmanager-slack-values.yaml(KR2) 주석 참고 —
+# 이 랩 클러스터 구조상 항상 참이라 실제 장애 신호가 될 수 없는 etcd/kubeProxy 그룹만 끈다.
+defaultRules:
+  rules:
+    etcd: false
+    kubeProxy: false
+
 alertmanager:
   alertmanagerSpec:
     secrets:

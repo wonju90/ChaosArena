@@ -76,6 +76,35 @@
   }
   .panel-title svg { width: 15px; height: 15px; opacity: 0.75; flex: none; }
 
+  /* 부가 설명용 "ⓘ" 아이콘 — 기본 화면은 깔끔하게 두고, 궁금한 사람만 호버/클릭해서 본다.
+     페이지마다 따로 떠 있던 설명 문단들을 이 공통 패턴 하나로 통일한다. */
+  .info-tip { position: relative; display: inline-flex; margin-left: 2px; }
+  .info-tip-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%;
+    font-size: 10.5px; font-weight: 700; line-height: 1;
+    color: #64748b; background: rgba(148,163,184,0.10); border: 1px solid rgba(148,163,184,0.22);
+    cursor: help; user-select: none;
+  }
+  .info-tip:hover .info-tip-icon, .info-tip.open .info-tip-icon {
+    color: #7dd3fc; border-color: rgba(56,189,248,0.4); background: rgba(56,189,248,0.14);
+  }
+  .info-tip-pop {
+    position: absolute; left: 0; top: 22px; z-index: 30;
+    width: 280px; max-width: 80vw;
+    background: #111a2e; border: 1px solid rgba(56,189,248,0.28); border-radius: 10px;
+    padding: 10px 12px; font-size: 11.5px; font-weight: 400; line-height: 1.6;
+    color: #a8b6ca; text-transform: none; letter-spacing: normal;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+    opacity: 0; visibility: hidden; transform: translateY(-4px);
+    transition: opacity 0.12s, transform 0.12s;
+    pointer-events: none;
+  }
+  .info-tip-pop code { color: #7dd3fc; }
+  .info-tip:hover .info-tip-pop, .info-tip.open .info-tip-pop {
+    opacity: 1; visibility: visible; transform: translateY(0); pointer-events: auto;
+  }
+
   /* stat-tile : 큰 숫자 + 라벨 (좌측 강조 바) */
   .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
   .stat-tile {
@@ -287,6 +316,15 @@ async function refreshDeployInfo() {
 }
 setInterval(refreshDeployInfo, 5000);
 refreshDeployInfo();
+
+// info-tip: 클릭/탭으로 토글(터치 기기 대응), 바깥을 클릭하면 닫힘. 호버는 CSS만으로 처리.
+document.addEventListener('click', (e) => {
+  const tip = e.target.closest('.info-tip');
+  document.querySelectorAll('.info-tip.open').forEach((t) => {
+    if (t !== tip) t.classList.remove('open');
+  });
+  if (tip) tip.classList.toggle('open');
+});
 </script>
 {% block extra_script %}{% endblock %}
 </body>

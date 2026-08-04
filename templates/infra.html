@@ -231,11 +231,13 @@
 
   <div class="panel">
     <div class="flex items-center gap-2">
-      <h2 class="panel-title" style="margin:0">{{ ic.i('box') }} 전체 인프라 흐름</h2>
-    </div>
-    <div class="text-[11px] text-faint mb-2">
-      GSLB → 리전(판교/평촌) → Ingress → chaos-demo(Deployment→ReplicaSet→Pod) · Redis · 모니터링 · CI/CD
-      — 5초 갱신. 파드를 스케일하면(HPA 3→6) 해당 리전 파이프라인에 새 파드가 실시간으로 돋아납니다.
+      <h2 class="panel-title" style="margin:0">{{ ic.i('box') }} 전체 인프라 흐름
+        <span class="info-tip" tabindex="0">
+          <span class="info-tip-icon">ⓘ</span>
+          <span class="info-tip-pop">5초마다 갱신됩니다. 파드를 스케일하면(HPA 3→6) 해당 리전
+            파이프라인에 새 파드가 실시간으로 돋아나요.</span>
+        </span>
+      </h2>
     </div>
 
     <!-- 글로벌 진입점: GSLB -->

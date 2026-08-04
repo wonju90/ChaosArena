@@ -130,7 +130,14 @@
   <div class="lg:col-span-2 flex flex-col gap-4">
 
     <div class="panel flex-1 flex flex-col">
-      <h2 class="panel-title">{{ ic.i('bolt') }} 이번 배포 미션 결과</h2>
+      <h2 class="panel-title">{{ ic.i('bolt') }} 이번 배포 미션 결과
+        <span class="info-tip" tabindex="0">
+          <span class="info-tip-icon">ⓘ</span>
+          <span class="info-tip-pop">Jenkins는 빌드·서명·커밋(CI)까지만 하고, 실제 배포(CD)는 ArgoCD가 Git을
+            지켜보다 스스로 반영합니다(GitOps Pull 모델). 랭크는 push부터 매니페스트 커밋까지 걸린
+            시간(초)을 파드 복구 미션과 같은 방식(S/A/B/C)으로 채점한 것입니다.</span>
+        </span>
+      </h2>
       <div id="deploy-rollback-notice" class="deploy-rollback-notice" style="display:none;"></div>
       <div class="deploy-rank-card">
         <div id="deploy-rank-letter" class="deploy-rank-letter rank-pending">--</div>
@@ -161,10 +168,6 @@
           <div class="stat-label">파이프라인 소요시간</div>
         </div>
       </div>
-      <p class="mt-3 text-[11px] text-faint leading-relaxed">
-        Jenkins는 빌드·서명·커밋(CI)까지만 하고, 실제 배포(CD)는 ArgoCD가 Git을 지켜보다 스스로 반영합니다(GitOps Pull 모델).
-        랭크는 push부터 매니페스트 커밋까지 걸린 시간(초)을 파드 복구 미션과 같은 방식(S/A/B/C)으로 채점한 것입니다.
-      </p>
     </div>
 
   </div>

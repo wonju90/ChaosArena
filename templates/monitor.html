@@ -102,7 +102,14 @@
   <!-- Prometheus 클러스터 전체 지표 -->
   <div class="panel">
     <div class="mb-3 flex items-center justify-between">
-      <h2 class="panel-title" style="margin:0;">{{ ic.i('activity') }} 클러스터 전체 지표 <span class="text-faint normal-case tracking-normal">· Prometheus 집계</span></h2>
+      <h2 class="panel-title" style="margin:0;">{{ ic.i('activity') }} 클러스터 전체 지표 <span class="text-faint normal-case tracking-normal">· Prometheus 집계</span>
+        <span class="info-tip" tabindex="0">
+          <span class="info-tip-icon">ⓘ</span>
+          <span class="info-tip-pop">위 KPI(맨 위)는 응답한 파드 1대의 로컬 값이라 폴링마다 들쭉날쭉할 수
+            있지만, 이 패널은 Prometheus가 모든 파드의 <code>/metrics</code>를 합산한 값이라 항상
+            클러스터 전체 기준입니다.</span>
+        </span>
+      </h2>
       <span id="prom-status-badge" class="prom-badge prom-badge-off"><span class="prom-badge-dot"></span>확인 중…</span>
     </div>
     <div class="stat-grid">
@@ -122,7 +129,6 @@
         <div class="stat-label">전체 파드 합산 응답시간</div>
       </div>
     </div>
-    <p class="mt-3 text-[11px] text-faint">위 KPI(맨 위)는 응답한 파드 1대의 로컬 값이라 폴링마다 들쭉날쭉할 수 있지만, 이 패널은 Prometheus가 모든 파드의 <code>/metrics</code>를 합산한 값이라 항상 클러스터 전체 기준입니다.</p>
   </div>
 
   <!-- 차트 2열 -->

@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# kube-prometheus-stack Helm 릴리즈에 Slack 알림 설정을 추가하는 values 파일.
+# 앱(app.py)이 쓰던 것과 동일한 k8s Secret(slack-webhook)을 재사용한다 — Webhook
+# URL을 여기에 평문으로 다시 적지 않기 위해, Alertmanager 파드에 그 Secret을
+# 파일로 마운트해서 읽게 한다(api_url_file).
+#
+# 적용 방법: --reuse-values는 -f 파일을 무시하는 함정이 있으므로 쓰지 않는다.
+# 대신 최초 설치 때 준 --set 값(NodePort 등)을 모두 다시 명시하고 이 파일을 -f로 합친다.
+#   helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring \
+#     --set grafana.service.type=NodePort --set grafana.service.nodePort=30030 \
+#     --set prometheus.service.type=NodePort --set prometheus.service.nodePorts.http=30090 \
+#     -f k8s/alertmanager-slack-values.yaml
+# ---------------------------------------------------------------------------
+# kube-prometheus-stack이 기본으로 심어주는 알림 규칙 중, 이 랩 클러스터(마스터 1대짜리
+# kubeadm 단일 클러스터) 구조상 "항상 참"이라 실제 장애 신호가 될 수 없는 그룹만 끈다.
+# - etcd: 멤버 수/쿼럼 관련 알림은 원래 다중 노드 HA etcd를 전제로 하는데, 여기는 단일 노드라
+#   etcdInsufficientMembers/etcdMembersDown이 상시 발생 - 끄는 게 맞다(HA로 바뀌면 다시 켜면 됨).
+# - kubeProxy: kubeadm 클러스터의 kube-proxy는 기본적으로 메트릭 포트가 127.0.0.1에 바인딩돼
+#   Prometheus가 스크랩할 수 없는 경우가 흔하다 - KubeProxyInstanceUnreachable은 실제 kube-proxy
+#   장애가 아니라 이 스크랩 불가 구조 때문에 상시 발생하는 것으로 확인됨.
+# 반대로 KubePodCrashLooping 등은 일부러 끄지 않는다 - 이 프로젝트(카오스 엔지니어링)에서는
+# 파드가 실제로 크래시루프에 빠지는 게 의미 있는 신호일 수 있기 때문이다.
+defaultRules:
+  rules:
+    etcd: false
+    kubeProxy: false
+
+alertmanager:
+  alertmanagerSpec:
+    # slack-webhook Secret을 /etc/alertmanager/secrets/slack-webhook/ 아래에 마운트
+    secrets:
+      - slack-webhook
+
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: slack-notifications
+      group_by: ["alertname"]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      # kube-prometheus-stack 기본 route가 내부 Watchdog 하트비트 알림을
+      # receiver "null"로 무음 처리하는데, 우리가 receivers 리스트를 통째로
+      # 덮어쓰면 그 이름이 사라져 Operator가 "undefined receiver null" 에러로
+      # reconcile 자체를 실패시킨다. 그래서 이 서브라우트를 그대로 유지한다.
+      routes:
+        - receiver: "null"
+          matchers:
+            - alertname = "Watchdog"
+    receivers:
+      - name: "null"
+      - name: slack-notifications
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/slack-webhook/url
+            channel: "#chaosarena-전체"
+            send_resolved: true
+            # KR1에도 같은 스택이 생기면서(컨트롤 플레인 이중화), 같은 채널로 알림이 섞여 들어오니
+            # 제목 접두어로 어느 리전 알림인지 구분한다(k8s/alertmanager-slack-values-kr1.yaml 참고).
+            #
+            # 한글화: chaos-demo.rules(prometheusrule.yaml)의 커스텀 알림은 annotations.summary에
+            # 이미 한글이 들어있어 그대로 통과시키면 된다. 문제는 kube-prometheus-stack이 기본으로
+            # 심어주는 규칙(InfoInhibitor/etcdInsufficientMembers 등)은 이름·설명이 전부 영어라는 것 —
+            # 이건 실제로 Slack에 왔던 것만 확인해서 번역했고, 모르는 alertname은 거짓으로 지어내지
+            # 않고 원문 그대로 통과시킨다(아래 else 분기). 새 기본 알림을 보게 되면 이 if/else 체인에
+            # 한 줄만 추가하면 된다.
+            title: "[KR2] {{ if eq .CommonLabels.alertname \"InfoInhibitor\" }}ℹ️ 정보성 알림 억제 중{{ else if eq .CommonLabels.alertname \"etcdInsufficientMembers\" }}⚠️ etcd 멤버 수 부족{{ else if eq .CommonLabels.alertname \"KubePodCrashLooping\" }}🔄 파드 크래시루프{{ else }}{{ .CommonLabels.alertname }}{{ end }}"
+            text: "{{ if eq .CommonLabels.alertname \"InfoInhibitor\" }}info 등급 알림이 하나 이상 억제(inhibit)되고 있어요 - 더 심각한 알림이 이미 울리고 있다는 뜻이니 그 알림부터 확인하세요.{{ else if eq .CommonLabels.alertname \"etcdInsufficientMembers\" }}etcd 클러스터 멤버 수가 기준보다 적어요. 이 클러스터는 마스터 1대짜리 단일 노드 etcd라 원래 상시 발생하는 알림이고(HA 구성이 아님), 실제 장애 신호는 아니에요.{{ else if eq .CommonLabels.alertname \"KubePodCrashLooping\" }}파드가 반복적으로 재시작(크래시루프)되고 있어요. Self-Healing이 계속 시도해도 안정되지 않는다는 뜻이라, 게임에서 일부러 죽인 게 아니라면 진짜 장애일 수 있어요 - 어느 파드인지 확인해보세요.{{ else }}{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}{{ end }}"

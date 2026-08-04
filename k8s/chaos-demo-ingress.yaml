@@ -1,0 +1,24 @@
+# KR2의 실제 입구(ingress-nginx가 30080을 물고 있음, k8s/ingress-nginx-values.yaml 참고).
+# host를 일부러 지정하지 않은 catch-all 규칙이다 — GSLB 헬스체커가 어떤 Host 헤더로 오든(또는
+# 아예 없이 IP로만 와도) 전부 받아서 앱으로 넘겨야 하기 때문. host를 특정 도메인으로 좁히면 그
+# 값과 다른 Host로 오는 요청(GSLB 헬스체크 등)이 "모르는 host"로 취급돼 404가 날 수 있다
+# (1단계 테스트 때는 이 동작이 오히려 "라우팅이 진짜 동작한다"는 증거였는데, 실제 입구가 된
+# 지금은 반대로 회귀 위험이라 host를 뺐다). 백엔드는 새 Service를 만들지 않고 기존
+# k8s/service-nodeport.yaml의 chaos-demo-nodeport(ClusterIP로 전환됨)를 그대로 재사용한다.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chaos-demo
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: chaos-demo-nodeport
+                port:
+                  number: 80

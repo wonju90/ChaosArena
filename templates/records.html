@@ -1,194 +1,252 @@
 {% extends "base.html" %}
-{% block title %}기록 - K8s 장애 대응 게임 대시보드{% endblock %}
+{% import "_icons.html" as ic %}
+{% block title %}기록실 — ChaosArena{% endblock %}
+{% block page_title %}기록실{% endblock %}
+{% block page_sub %}복구 성적, 하이스코어, 최근 기록 히스토리{% endblock %}
 
 {% block extra_style %}
   .combo-banner {
-    margin-top: 14px;
-    background: linear-gradient(135deg, rgba(124, 45, 18, 0.5), rgba(154, 52, 18, 0.25));
-    border: 1px solid rgba(251, 146, 60, 0.35);
-    border-radius: 12px;
-    padding: 10px 16px;
-    font-size: 14px;
-    color: #fed7aa;
+    background: linear-gradient(135deg, rgba(124,45,18,0.5), rgba(154,52,18,0.2));
+    border: 1px solid rgba(251,146,60,0.35);
+    border-radius: 10px; padding: 11px 16px; font-size: 14px; color: #fed7aa;
     display: none;
   }
   .combo-banner.show { display: block; }
 
-  /* 하이스코어 포디움 (1등 가운데, 크게) */
-  .podium-row {
-    display: flex;
-    align-items: flex-end;
-    justify-content: center;
-    gap: 14px;
-    margin-top: 6px;
-  }
+  /* 하이스코어 포디움 (1등 가운데, 크게) — JS가 .podium-card 생성 */
+  .podium-row { display: flex; align-items: flex-end; justify-content: center; gap: 14px; margin-top: 6px; }
   .podium-card {
-    flex: 1;
-    max-width: 160px;
-    background: rgba(15, 23, 42, 0.6);
-    border-radius: 12px;
-    text-align: center;
-    padding: 16px 10px;
-    border: 1px solid rgba(148, 163, 184, 0.12);
+    flex: 1; max-width: 150px; background: #0b1220;
+    border-radius: 12px; text-align: center; padding: 18px 12px;
+    border: 1px solid rgba(148,163,184,0.12);
   }
   .podium-card.rank-1 {
-    order: 2;
-    padding-top: 26px;
-    border-color: rgba(250, 204, 21, 0.4);
-    background: linear-gradient(165deg, rgba(250, 204, 21, 0.12), rgba(15, 23, 42, 0.6));
+    order: 2; padding: 30px 12px 22px;
+    border-color: rgba(250,204,21,0.45);
+    background: linear-gradient(165deg, rgba(250,204,21,0.12), rgba(11,18,32,0.9));
+    box-shadow: 0 0 24px rgba(250,204,21,0.12);
   }
   .podium-card.rank-2 { order: 1; }
   .podium-card.rank-3 { order: 3; }
-  .podium-medal { font-size: 32px; }
-  .podium-card.rank-1 .podium-medal { font-size: 44px; }
-  .podium-seconds { font-size: 20px; font-weight: 800; margin-top: 6px; }
-  .podium-empty {
-    flex: 1;
-    max-width: 160px;
-    text-align: center;
-    color: #64748b;
-    font-size: 13px;
-    padding: 20px 10px;
-  }
+  .podium-medal { font-size: 34px; }
+  .podium-card.rank-1 .podium-medal { font-size: 46px; }
+  .podium-seconds { font-size: 22px; font-weight: 800; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .podium-empty { flex: 1; }
 
-  /* 최근 기록 막대그래프 */
-  .history-chart {
-    display: flex;
-    align-items: flex-end;
-    gap: 6px;
-    height: 120px;
-    margin-top: 12px;
-    padding: 0 4px;
-  }
-  .history-bar-wrap {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-end;
-    height: 100%;
-  }
-  .history-bar {
-    width: 100%;
-    max-width: 28px;
-    border-radius: 6px 6px 2px 2px;
-    transition: height 0.3s ease-out;
-  }
-  .history-bar-rank-S { background: linear-gradient(180deg, #facc15, #a16207); }
-  .history-bar-rank-A { background: linear-gradient(180deg, #a78bfa, #6d28d9); }
-  .history-bar-rank-B { background: linear-gradient(180deg, #60a5fa, #1d4ed8); }
-  .history-bar-rank-C { background: linear-gradient(180deg, #94a3b8, #475569); }
-  .history-bar-label { font-size: 10px; color: #94a3b8; margin-top: 4px; }
-  .history-empty { color: #64748b; font-size: 14px; padding: 10px 0; }
+  #history-canvas-wrap { position: relative; height: 200px; margin-top: 8px; }
 
-  .records-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-  .records-header-row h2 { margin: 0; }
+  /* 빈 상태 — "고장난 화면"이 아니라 "아직 안 해본 것뿐"임을 분명히 전달한다 */
+  .records-empty-state {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    padding: 34px 16px 30px; text-align: center;
+  }
+  .records-empty-icon {
+    font-size: 40px; opacity: 0.55; filter: grayscale(0.15);
+  }
+  .records-empty-text { font-size: 13.5px; color: #8593a8; line-height: 1.6; max-width: 300px; }
+  .records-empty-cta {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 4px;
+    padding: 7px 16px; border-radius: 999px; font-size: 12.5px; font-weight: 700;
+    background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.35); color: #38bdf8;
+    text-decoration: none; transition: background 0.15s, transform 0.15s;
+  }
+  .records-empty-cta:hover { background: rgba(56,189,248,0.22); transform: translateY(-1px); }
+
+  /* 우측 "최근 배포 이력" 미니 패널 — /api/deploy-history 재사용, CI/CD 탭으로 이어주는 크로스링크 */
+  .mini-deploy-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .mini-deploy-item {
+    padding: 8px 11px; border-radius: 9px; background: #0b1220;
+    border-left: 3px solid #334155; font-size: 12.5px; color: #cdd7e6;
+  }
+  .mini-deploy-item.event-success { border-left-color: #34d399; }
+  .mini-deploy-item.event-rollback { border-left-color: #f87171; }
+  .mini-deploy-empty { color: #64748b; font-size: 13px; text-align: center; padding: 16px 0; }
+  .mini-deploy-link {
+    display: inline-block; margin-top: 10px; font-size: 12px; color: #38bdf8; text-decoration: none;
+  }
+  .mini-deploy-link:hover { text-decoration: underline; }
+
   #btn-reset-records {
-    background: rgba(127, 29, 29, 0.35);
-    color: #fca5a5;
-    border: 1px solid rgba(248, 113, 113, 0.3);
-    border-radius: 8px;
-    padding: 6px 12px;
-    font-size: 12px;
-    cursor: pointer;
+    background: rgba(127,29,29,0.35); color: #fca5a5;
+    border: 1px solid rgba(248,113,113,0.3); border-radius: 8px;
+    padding: 6px 12px; font-size: 12px; cursor: pointer; transition: background 0.15s;
   }
-  #btn-reset-records:hover { background: rgba(127, 29, 29, 0.55); }
+  #btn-reset-records:hover { background: rgba(127,29,29,0.55); }
 
   @media (max-width: 560px) {
     .podium-row { flex-wrap: wrap; }
     .podium-card { max-width: 45%; }
-    .podium-card.rank-1 { order: 0; max-width: 100%; padding-top: 16px; }
-    .podium-card.rank-2 { order: 1; }
-    .podium-card.rank-3 { order: 2; }
+    .podium-card.rank-1 { order: 0; max-width: 100%; }
+    .podium-card.rank-2 { order: 1; } .podium-card.rank-3 { order: 2; }
   }
 {% endblock %}
 
 {% block content %}
-  <div class="panel">
-    <div class="records-header-row">
-      <h2>🏆 오늘의 기록</h2>
-      <button id="btn-reset-records" onclick="resetRecords()">🗑 기록 초기화</button>
-    </div>
-    <div class="stat-grid">
-      <div class="stat-tile stat-accent-blue">
-        <div class="stat-icon">🚨</div>
-        <div class="stat-value" id="record-total">0</div>
-        <div class="stat-label">총 발생 횟수</div>
-      </div>
-      <div class="stat-tile stat-accent-orange">
-        <div class="stat-icon">⏱️</div>
-        <div class="stat-value"><span id="record-avg">-</span>초</div>
-        <div class="stat-label">평균 복구 시간</div>
-      </div>
-      <div class="stat-tile stat-accent-gold">
-        <div class="stat-icon">⭐</div>
-        <div class="stat-value"><span id="record-best">-</span>초</div>
-        <div class="stat-label">역대 최고 기록</div>
-      </div>
-    </div>
-    <div id="combo-banner" class="combo-banner"></div>
-  </div>
+<div class="flex flex-col gap-4">
 
-  <div class="panel">
-    <h2>🥇 하이스코어 보드</h2>
-    <div id="podium-row" class="podium-row">
-      <div class="podium-empty">아직 기록이 없습니다</div>
+  <!-- KPI -->
+  <div class="stat-grid">
+    <div class="stat-tile stat-accent-blue">
+      <div class="stat-icon">🚨</div>
+      <div class="stat-value" id="record-total">0</div>
+      <div class="stat-label">총 발생 횟수</div>
+    </div>
+    <div class="stat-tile stat-accent-orange">
+      <div class="stat-icon">⏱️</div>
+      <div class="stat-value"><span id="record-avg">-</span><span class="text-lg">초</span></div>
+      <div class="stat-label">평균 복구 시간</div>
+    </div>
+    <div class="stat-tile stat-accent-gold">
+      <div class="stat-icon">⭐</div>
+      <div class="stat-value"><span id="record-best">-</span><span class="text-lg">초</span></div>
+      <div class="stat-label">역대 최고 기록</div>
     </div>
   </div>
 
-  <div class="panel">
-    <h2>📈 최근 기록 추이</h2>
-    <div id="history-chart" class="history-chart">
-      <div class="history-empty">아직 기록이 없습니다</div>
+  <div id="combo-banner" class="combo-banner"></div>
+
+  <!-- 하이스코어 + 히스토리(좌측 2/3) + 최근 배포 이력(우측 1/3) -->
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="lg:col-span-2 flex flex-col gap-4">
+      <div class="panel">
+        <h2 class="panel-title">{{ ic.i('trophy') }} 하이스코어 보드</h2>
+        <div id="podium-row" class="podium-row">
+          <div class="podium-empty records-empty-state">
+            <div class="records-empty-icon">🏆</div>
+            <div class="records-empty-text">아직 하이스코어가 없습니다. 게임 콘솔에서 장애를 복구해 첫 기록을 세워보세요.</div>
+            <a href="/" class="records-empty-cta">🎮 게임 콘솔로 이동 →</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="panel-title" style="margin:0;">{{ ic.i('bars') }} 최근 복구 기록 <span class="text-faint normal-case tracking-normal">· 빠를수록 좋음</span></h2>
+          <button id="btn-reset-records" onclick="resetRecords()">🗑 기록 초기화</button>
+        </div>
+        <div id="history-empty" class="records-empty-state">
+          <div class="records-empty-icon">📊</div>
+          <div class="records-empty-text">아직 복구 기록이 없습니다. 미션을 완료하면 여기 그래프가 채워집니다.</div>
+          <a href="/" class="records-empty-cta">🎮 게임 콘솔로 이동 →</a>
+        </div>
+        <div id="history-canvas-wrap" style="display:none;"><canvas id="history-chart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="flex flex-col gap-4">
+      <div class="panel">
+        <h2 class="panel-title">{{ ic.i('activity') }} 최근 배포 이력</h2>
+        <div id="mini-deploy-history" class="mini-deploy-list">
+          <div class="mini-deploy-empty">아직 배포 이력이 없습니다</div>
+        </div>
+        <a href="/cicd" class="mini-deploy-link">CI/CD 미션에서 전체 보기 →</a>
+      </div>
     </div>
   </div>
+
+</div>
 {% endblock %}
 
 {% block extra_script %}
 <script>
+Chart.defaults.color = '#94a3b8';
+Chart.defaults.borderColor = 'rgba(148,163,184,0.10)';
+Chart.defaults.font.family = "'Pretendard Variable', Pretendard, system-ui, sans-serif";
+
 const MEDALS = ['🥇', '🥈', '🥉'];
+const RANK_BAR_COLORS = { S: '#facc15', A: '#a78bfa', B: '#38bdf8', C: '#94a3b8' };
+
+// 막대 위에 값(초)을 직접 라벨로 표시하는 플러그인
+const barLabelPlugin = {
+  id: 'barLabels',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    const meta = chart.getDatasetMeta(0);
+    const data = chart.data.datasets[0].data;
+    meta.data.forEach((bar, idx) => {
+      ctx.save();
+      ctx.font = "700 10px 'Pretendard Variable', Pretendard, sans-serif";
+      ctx.fillStyle = '#cbd5e1';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(data[idx] + 's', bar.x, bar.y - 4);
+      ctx.restore();
+    });
+  },
+};
+
+const PODIUM_EMPTY_HTML = `
+  <div class="podium-empty records-empty-state">
+    <div class="records-empty-icon">🏆</div>
+    <div class="records-empty-text">아직 하이스코어가 없습니다. 게임 콘솔에서 장애를 복구해 첫 기록을 세워보세요.</div>
+    <a href="/" class="records-empty-cta">🎮 게임 콘솔로 이동 →</a>
+  </div>`;
 
 function renderPodium(leaderboard) {
   const row = document.getElementById('podium-row');
   if (!leaderboard || leaderboard.length === 0) {
-    row.innerHTML = '<div class="podium-empty">아직 기록이 없습니다</div>';
+    row.innerHTML = PODIUM_EMPTY_HTML;
     return;
   }
-  row.innerHTML = leaderboard
-    .map(entry => `
-      <div class="podium-card rank-${entry.rank_no}">
-        <div class="podium-medal">${MEDALS[entry.rank_no - 1] || '🎖'}</div>
-        <div class="podium-seconds">${entry.seconds}초</div>
-      </div>
-    `)
-    .join('');
+  row.innerHTML = leaderboard.map(entry => `
+    <div class="podium-card rank-${entry.rank_no}">
+      <div class="podium-medal">${MEDALS[entry.rank_no - 1] || '🎖'}</div>
+      <div class="podium-seconds">${entry.seconds}<span class="text-sm text-subink">초</span></div>
+    </div>`).join('');
 }
 
+// 최근 기록 막대그래프 (Chart.js) — 막대 색은 랭크별
+let historyChart = null;
 function renderHistory(history) {
-  const chart = document.getElementById('history-chart');
+  const emptyEl = document.getElementById('history-empty');
+  const wrapEl = document.getElementById('history-canvas-wrap');
   if (!history || history.length === 0) {
-    chart.innerHTML = '<div class="history-empty">아직 기록이 없습니다</div>';
+    emptyEl.style.display = 'block'; wrapEl.style.display = 'none';
     return;
   }
-  const maxSeconds = Math.max(...history.map(h => h.seconds), 5);
-  chart.innerHTML = history
-    .map(h => {
-      const heightPct = Math.max((h.seconds / maxSeconds) * 100, 6);
-      return `
-        <div class="history-bar-wrap" title="${h.seconds}초 (${h.rank}랭크)">
-          <div class="history-bar history-bar-rank-${h.rank}" style="height:${heightPct}%;"></div>
-          <div class="history-bar-label">${h.rank}</div>
-        </div>
-      `;
-    })
-    .join('');
+  emptyEl.style.display = 'none'; wrapEl.style.display = 'block';
+
+  const labels = history.map((h, i) => `#${i + 1}`);
+  const values = history.map(h => h.seconds);
+  const colors = history.map(h => RANK_BAR_COLORS[h.rank] || '#94a3b8');
+  const ranks = history.map(h => h.rank);
+
+  if (!historyChart) {
+    historyChart = new Chart(document.getElementById('history-chart').getContext('2d'), {
+      type: 'bar',
+      data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 6, borderSkipped: false }] },
+      plugins: [barLabelPlugin],
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: { duration: 400 },
+        layout: { padding: { top: 16 } },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: 'rgba(15,23,37,0.96)', borderColor: 'rgba(148,163,184,0.25)', borderWidth: 1, padding: 10, displayColors: false,
+            callbacks: { label: (c) => `${c.parsed.y}초 · ${ranks[c.dataIndex]}랭크` },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+          y: { beginAtZero: true, title: { display: true, text: '복구 시간(초)', font: { size: 10 } }, ticks: { font: { size: 10 } }, grid: { color: 'rgba(148,163,184,0.08)' } },
+        },
+      },
+    });
+  } else {
+    historyChart.data.labels = labels;
+    historyChart.data.datasets[0].data = values;
+    historyChart.data.datasets[0].backgroundColor = colors;
+    historyChart._rankMeta = ranks;
+    historyChart.options.plugins.tooltip.callbacks.label = (c) => `${c.parsed.y}초 · ${ranks[c.dataIndex]}랭크`;
+    historyChart.update('none');
+  }
 }
 
 // 하이스코어 보드: 3초마다 갱신
 async function refreshRecords() {
   const res = await fetch('/api/records');
   const data = await res.json();
-  document.getElementById('record-total').innerText = data.total_incidents;
+  document.getElementById('record-total').innerText = Number(data.total_incidents).toLocaleString();
   document.getElementById('record-avg').innerText = data.avg_recovery_seconds;
   document.getElementById('record-best').innerText =
     data.best_recovery_seconds === null ? '-' : data.best_recovery_seconds;
@@ -211,7 +269,30 @@ async function resetRecords() {
   refreshRecords();
 }
 
+// 최근 배포 이력 — cicd.html의 renderDeployHistory()를 요약해 재사용
+async function refreshMiniDeployHistory() {
+  try {
+    const res = await fetch('/api/deploy-history');
+    const data = await res.json();
+    const el = document.getElementById('mini-deploy-history');
+    if (!data.events || data.events.length === 0) {
+      el.innerHTML = '<div class="mini-deploy-empty">아직 배포 이력이 없습니다</div>';
+      return;
+    }
+    el.innerHTML = data.events.slice(0, 3).map((ev) => {
+      const isRollback = ev.status === 'rollback';
+      const icon = isRollback ? '🔁' : '✅';
+      const label = isRollback
+        ? `#${ev.build_number} → #${ev.recovered_build} 복구`
+        : `#${ev.build_number} 성공`;
+      return `<div class="mini-deploy-item ${isRollback ? 'event-rollback' : 'event-success'}">${icon} ${label}</div>`;
+    }).join('');
+  } catch (e) {}
+}
+
 setInterval(refreshRecords, 3000);
+setInterval(refreshMiniDeployHistory, 5000);
 refreshRecords();
+refreshMiniDeployHistory();
 </script>
 {% endblock %}

@@ -14,6 +14,8 @@ admin_cidr     = "203.0.113.4/32" # 본인 접속 IP/32
 
 # vpc_id / subnet_id 는 콘솔 Network > VPC / Subnet 에서 확인.
 # 인터넷 게이트웨이가 연결된 기존 VPC(보통 'Default Network')와 그 안의 서브넷을 지정한다.
+# flavor_name은 리전별 메모리 쿼터에 맞춰 조정 가능. 정식 스펙은 r2.c4m16(4vCPU/16GB)이지만,
+# 쿼터가 빠듯하면 m2.c2m4(2vCPU/4GB) 같은 최소 스펙으로도 테스트 가능(kubeadm 최소 요구: 2vCPU 이상).
 kr1_vpc_id      = "REPLACE_WITH_KR1_VPC_ID"
 kr1_subnet_id   = "REPLACE_WITH_KR1_SUBNET_ID"
 kr1_image_name  = "Ubuntu Server 22.04.5 LTS (2026.03.10)"

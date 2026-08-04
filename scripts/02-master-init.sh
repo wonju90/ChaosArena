@@ -10,9 +10,11 @@ set -euo pipefail
 
 MASTER_PRIVATE_IP="${1:?사용법: ./02-master-init.sh <마스터 private IP>}"
 
-# --pod-network-cidr=192.168.0.0/16 은 Calico 기본 CIDR (03-install-calico.sh와 짝을 이룸)
+# Pod 네트워크 CIDR. 노드가 속한 Default Network 서브넷(192.168.0.0/24)과 겹치면
+# 파드 IP가 노드 IP 대역과 충돌하므로, 안 겹치는 172.16.0.0/16을 쓴다.
+# (03-install-calico.sh의 Calico ipPool CIDR과 반드시 동일해야 함)
 sudo kubeadm init \
-  --pod-network-cidr=192.168.0.0/16 \
+  --pod-network-cidr=172.16.0.0/16 \
   --apiserver-advertise-address="${MASTER_PRIVATE_IP}"
 
 mkdir -p "$HOME/.kube"

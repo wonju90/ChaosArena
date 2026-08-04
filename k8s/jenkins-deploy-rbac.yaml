@@ -1,0 +1,48 @@
+# -----------------------------------------------------------------------------
+# ⚠️ ArgoCD(GitOps) 도입 이후로는 더 이상 쓰이지 않는다. Jenkinsfile이 kubectl로 직접 배포하던
+# Push 모델 때 만든 권한이었는데, 이제 Jenkins는 ChaosArena-manifests 레포에 커밋만 하고 클러스터를
+# 직접 안 건드리므로 이 ServiceAccount/Role이 필요 없다(least privilege 관점에서 삭제해도 되는
+# 후보 — 지금은 참고용으로 남겨둠). 아래는 Push 모델이었을 때의 원래 설명:
+#
+# Jenkinsfile의 "Deploy" 스테이지가 default 네임스페이스의 chaos-demo Deployment를
+# 업데이트(kubectl set image, rollout status)하려면 권한이 필요하다.
+# k8s/rbac.yaml(앱용 pod-manager)과 동일한 최소 권한 패턴이되, 대상 리소스와 verb만 다르다.
+#
+# ServiceAccount는 jenkins 네임스페이스에 두고(빌드 에이전트 파드가 그 네임스페이스에서 뜨므로),
+# Role/RoleBinding은 대상 리소스가 있는 default 네임스페이스에 둔다(네임스페이스를 넘나드는 바인딩).
+# -----------------------------------------------------------------------------
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins-deployer
+  namespace: jenkins
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chaos-demo-deployer
+  namespace: default
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch", "watch"]   # patch: kubectl set image, watch: rollout status가 진행 감시에 사용
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]   # rollout status가 파드 상태를 지켜보는 데 필요
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-deployer-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-deployer
+    namespace: jenkins
+roleRef:
+  kind: Role
+  name: chaos-demo-deployer
+  apiGroup: rbac.authorization.k8s.io

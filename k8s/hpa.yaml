@@ -1,0 +1,25 @@
+# chaos-demo 오토스케일링. minReplicas는 고정 replicas(3)와 반드시 같게 유지한다 —
+# app.py의 EXPECTED_REPLICAS=3 기반 미션 완료 판정(ready_count >= 3)이 3 밑으로
+# 절대 안 내려간다는 전제로 짜여 있어서, HPA가 그 밑으로 줄이면 게임 로직과 어긋난다.
+# maxReplicas=6은 워커 3대 × 노드당 최대 2개 — deployment.yaml의 anti-affinity 완화와 짝을 이룬다.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chaos-demo
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: chaos-demo
+  minReplicas: 3
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # 기존 "🔥 CPU 부하" Chaos 버튼이 파드 1개를 limit(500m)까지 태우면, 3개 평균이
+          # 이 목표치를 가볍게 넘어서므로 새 부하 스크립트 없이 그대로 HPA 트리거로 쓸 수 있다.
+          averageUtilization: 50

@@ -3,173 +3,212 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{% block title %}K8s 장애 대응 게임 대시보드{% endblock %}</title>
+<title>{% block title %}ChaosArena — K8s 장애 대응 게임{% endblock %}</title>
+
+<!-- 탭 아이콘(⚡ 이모지 SVG) -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>⚡</text></svg>">
+
+<!-- 웹폰트 Pretendard (Variable) : 콘솔 타이포를 또렷하게 -->
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css">
+
+<!-- Tailwind CSS (Play CDN) : 빌드 없이 유틸리티 클래스 사용 -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink:      '#e8eef7',   // 기본 텍스트
+          subink:   '#9aa7bd',   // 보조 텍스트
+          faint:    '#5f6c82',   // 흐린 텍스트
+          surface:  '#080c15',   // 페이지(콘텐츠) 배경
+          rail:      '#0c1220',   // 사이드바 배경
+          panel:    '#0f1725',   // 카드 배경
+          line:     'rgba(148,163,184,0.10)',
+          accent:   '#38bdf8',   // 시안 (주 강조)
+          good:     '#22c55e',
+          warn:     '#f59e0b',
+          bad:      '#ef4444',
+        },
+        fontFamily: {
+          sans: ['Pretendard Variable', 'Pretendard', 'system-ui', '-apple-system', 'Segoe UI', 'Malgun Gothic', 'sans-serif'],
+        },
+      },
+    },
+  };
+</script>
+
+<!-- Chart.js : 실시간 라인/막대 차트 -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
+
 <style>
-  * { box-sizing: border-box; }
+  html, body { background-color: #080c15; }
 
-  body {
-    background:
-      radial-gradient(circle at 15% 0%, rgba(56, 189, 248, 0.08), transparent 40%),
-      radial-gradient(circle at 85% 20%, rgba(168, 85, 247, 0.07), transparent 45%),
-      #0f172a;
-    color: #e2e8f0;
-    font-family: "Pretendard", "Malgun Gothic", sans-serif;
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 20px;
+  /* ── 운영 콘솔 셸 ─────────────────────────────────────────── */
+  .rail-link {
+    display: flex; align-items: center; gap: 11px;
+    padding: 9px 12px; border-radius: 9px;
+    font-size: 13.5px; font-weight: 600; color: #9aa7bd;
+    transition: background 0.15s, color 0.15s;
+    position: relative;
+  }
+  .rail-link:hover { background: rgba(148,163,184,0.06); color: #e8eef7; }
+  .rail-link svg { width: 18px; height: 18px; flex: none; }
+  .rail-link.active { background: rgba(56,189,248,0.10); color: #e8eef7; }
+  .rail-link.active::before {
+    content: ''; position: absolute; left: -9px; top: 8px; bottom: 8px;
+    width: 3px; border-radius: 3px; background: #38bdf8;
   }
 
+  /* ── 재사용 컴포넌트 클래스 (JS가 생성/참조하는 것들 포함) ─────────── */
   .panel {
-    background: linear-gradient(165deg, #1e293b 0%, #17233a 100%);
-    border: 1px solid rgba(148, 163, 184, 0.08);
-    border-radius: 14px;
-    padding: 18px 22px;
-    margin-bottom: 16px;
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
-    animation: panel-in 0.35s ease-out both;
-  }
-  @keyframes panel-in {
-    from { opacity: 0; transform: translateY(6px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .panel h2 {
-    margin: 0 0 12px 0;
-    font-size: 15px;
-    color: #94a3b8;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  /* 재사용 stat-tile: 아이콘 + 큰 숫자 + 라벨 카드 */
-  .stat-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 12px;
-  }
-  .stat-tile {
-    background: rgba(15, 23, 42, 0.6);
-    border: 1px solid rgba(148, 163, 184, 0.12);
+    background: #0f1725;
+    border: 1px solid rgba(148,163,184,0.10);
     border-radius: 12px;
-    padding: 14px 16px;
-    transition: transform 0.15s, border-color 0.15s;
+    padding: 16px 18px;
   }
-  .stat-tile:hover { transform: translateY(-2px); border-color: rgba(148, 163, 184, 0.3); }
-  .stat-tile .stat-icon { font-size: 20px; margin-bottom: 6px; }
-  .stat-tile .stat-value { font-size: 26px; font-weight: 800; line-height: 1.1; }
-  .stat-tile .stat-label { font-size: 12px; color: #94a3b8; margin-top: 4px; }
-  .stat-accent-blue .stat-value { color: #60a5fa; }
-  .stat-accent-green .stat-value { color: #4ade80; }
-  .stat-accent-orange .stat-value { color: #fb923c; }
-  .stat-accent-red .stat-value { color: #f87171; }
-  .stat-accent-gold .stat-value { color: #facc15; }
+  .panel-title {
+    display: flex; align-items: center; gap: 7px;
+    margin: 0 0 14px 0;
+    font-size: 11px; font-weight: 700;
+    color: #8593a8; text-transform: uppercase; letter-spacing: 0.07em;
+  }
+  .panel-title svg { width: 15px; height: 15px; opacity: 0.75; flex: none; }
+
+  /* stat-tile : 큰 숫자 + 라벨 (좌측 강조 바) */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .stat-tile {
+    position: relative; overflow: hidden;
+    background: #0b1220;
+    border: 1px solid rgba(148,163,184,0.10);
+    border-radius: 10px; padding: 14px 16px;
+    transition: border-color 0.15s;
+  }
+  .stat-tile:hover { border-color: rgba(56,189,248,0.35); }
+  .stat-tile::after {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--accent, #38bdf8);
+  }
+  .stat-tile .stat-icon { font-size: 15px; opacity: 0.85; }
+  .stat-tile .stat-value {
+    font-size: 28px; font-weight: 800; line-height: 1.05; margin-top: 4px;
+    color: var(--accent, #e8eef7); font-variant-numeric: tabular-nums;
+  }
+  .stat-tile .stat-label { font-size: 11.5px; color: #8593a8; margin-top: 3px; }
+  /* 색상 의미(전 페이지 공통 규칙 — 새 지표 추가 시 이 기준을 따를 것):
+     blue=기본 카운트/식별 값, orange=시간·속도 값, red=경고/실패 값,
+     gold=최고 기록/랭크 성취 값, green=정상/성공 상태 값(단순 식별자에는 쓰지 않음) */
+  .stat-accent-blue   { --accent: #38bdf8; }
+  .stat-accent-green  { --accent: #4ade80; }
+  .stat-accent-orange { --accent: #fb923c; }
+  .stat-accent-red    { --accent: #f87171; }
+  .stat-accent-gold   { --accent: #facc15; }
 
   .pill-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 12px;
-    font-weight: 600;
-    padding: 4px 10px;
-    border-radius: 999px;
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 7px;
+    border: 1px solid transparent;
   }
 
-  /* 상단 네비게이션 (페이지 3개: 게임 / 대시보드 / 기록) */
-  .top-nav {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
-    gap: 10px;
+  /* 배포 알림 토스트: 어느 페이지에 있어도 CI/CD가 방금 새 버전을 배포했음을 보여준다
+     (미션 배지와 같은 "페이지 무관 공통 안내" 패턴, 시각적 스타일은 game.html의 event-toast 참고) */
+  .deploy-toast {
+    position: fixed; bottom: 26px; left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: rgba(15,23,37,0.96); border: 1px solid rgba(56,189,248,0.35);
+    backdrop-filter: blur(8px); color: #f1f5f9;
+    padding: 11px 22px; border-radius: 999px; font-size: 14px;
+    opacity: 0; transition: opacity 0.25s, transform 0.25s;
+    pointer-events: none; z-index: 80; max-width: 90vw; text-align: center;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.4);
   }
-  .nav-links {
-    display: flex;
-    gap: 6px;
-    background: rgba(15, 23, 42, 0.5);
-    padding: 5px;
-    border-radius: 12px;
-    border: 1px solid rgba(148, 163, 184, 0.1);
-  }
-  .nav-links a {
-    padding: 8px 16px;
-    border-radius: 8px;
-    background: transparent;
-    color: #94a3b8;
-    text-decoration: none;
-    font-size: 14px;
-    font-weight: 600;
-    transition: background 0.15s, color 0.15s, transform 0.15s;
-    display: inline-block;
-  }
-  .nav-links a:hover { background: #334155; color: #f1f5f9; }
-  .nav-links a.active {
-    background: linear-gradient(135deg, #334155, #475569);
-    color: #f8fafc;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  }
-
-  .nav-badges { display: flex; gap: 8px; align-items: center; }
-  #local-mode-badge {
-    font-size: 13px;
-    background: #713f12;
-    padding: 4px 10px;
-    border-radius: 999px;
-    color: #fde68a;
-    display: none; /* LOCAL_MODE일 때만 JS로 보여줌 */
-  }
-  #version-badge {
-    font-size: 13px;
-    background: #334155;
-    padding: 4px 10px;
-    border-radius: 999px;
-    color: #cbd5e1;
-  }
-
-  /* 다른 페이지에 있어도 미션 진행 상황을 놓치지 않도록 하는 네비게이션 배지 */
-  #mission-nav-badge {
-    font-size: 13px;
-    font-weight: 600;
-    background: rgba(124, 45, 18, 0.5);
-    padding: 4px 10px;
-    border-radius: 999px;
-    color: #fdba74;
-    display: none;
-    animation: mission-badge-pulse 1.4s ease-in-out infinite;
-  }
-  @keyframes mission-badge-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.55; }
-  }
-
-  /* 좁은 화면(모바일) 대응 */
-  @media (max-width: 560px) {
-    body { padding: 14px; }
-    .top-nav { flex-direction: column; align-items: stretch; }
-    .nav-links { justify-content: center; }
-    .nav-badges { justify-content: center; flex-wrap: wrap; }
-    .stat-grid { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
-    .stat-tile .stat-value { font-size: 22px; }
-  }
+  .deploy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
   {% block extra_style %}{% endblock %}
 </style>
 </head>
-<body>
+<body class="font-sans text-ink min-h-screen">
 
-<nav class="top-nav">
-  <div class="nav-links">
-    <a href="/" class="{{ 'active' if active_page == 'game' else '' }}">🎮 게임</a>
-    <a href="/monitor" class="{{ 'active' if active_page == 'monitor' else '' }}">📊 대시보드</a>
-    <a href="/records" class="{{ 'active' if active_page == 'records' else '' }}">🏆 기록</a>
-  </div>
-  <div class="nav-badges">
-    <span id="mission-nav-badge"></span>
-    <span id="local-mode-badge">🧪 로컬 모드 (가짜 데이터)</span>
-    <span id="version-badge">배포 버전: {{ version }}</span>
-  </div>
-</nav>
+<div class="flex min-h-screen">
 
-{% block content %}{% endblock %}
+  <!-- ── 사이드바 ─────────────────────────────────────────── -->
+  <aside class="hidden md:flex md:flex-col md:w-[228px] shrink-0 border-r border-line bg-rail sticky top-0 h-screen px-4 py-5">
+    <div class="flex items-center gap-2.5 px-1 mb-7">
+      <div class="grid h-9 w-9 place-items-center rounded-lg bg-accent/15 text-lg ring-1 ring-accent/25">⚡</div>
+      <div>
+        <div class="text-[15px] font-extrabold tracking-tight leading-none">Chaos<span class="text-accent">Arena</span></div>
+        <div class="text-[10px] text-faint mt-1">K8s Self-Healing Console</div>
+      </div>
+    </div>
+
+    <div class="px-1 mb-2 text-[10px] font-bold uppercase tracking-wider text-faint">메뉴</div>
+    <nav class="flex flex-col gap-1">
+      <a href="/" class="rail-link {% if active_page == 'game' %}active{% endif %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+        게임 콘솔
+      </a>
+      <a href="/monitor" class="rail-link {% if active_page == 'monitor' %}active{% endif %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6" rx="1"/><rect x="12" y="7" width="3" height="10" rx="1"/><rect x="17" y="13" width="3" height="4" rx="1"/></svg>
+        실시간 대시보드
+      </a>
+      <a href="/records" class="rail-link {% if active_page == 'records' %}active{% endif %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4zM7 5H4v2a3 3 0 0 0 3 3M17 5h3v2a3 3 0 0 1-3 3"/></svg>
+        기록실
+      </a>
+      <a href="/cicd" class="rail-link {% if active_page == 'cicd' %}active{% endif %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/><path d="M20 4v4M22 6h-4"/></svg>
+        CI/CD 미션
+      </a>
+      <a href="/infra" class="rail-link {% if active_page == 'infra' %}active{% endif %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        인프라 지도
+      </a>
+    </nav>
+
+    <div class="mt-auto flex flex-col gap-2 px-1">
+      <span id="local-mode-badge" class="hidden pill-badge" style="background:rgba(113,63,18,0.5);color:#fde68a;border-color:rgba(234,179,8,0.3);">🧪 로컬 모드</span>
+      <div class="flex items-center gap-2 text-[11px] text-faint">
+        <span class="h-1.5 w-1.5 rounded-full bg-good"></span>
+        <span>배포판 <span class="font-semibold text-subink">{{ version }}</span></span>
+      </div>
+      <div id="deploy-build-badge" class="hidden text-[10px] text-faint pl-3.5"></div>
+    </div>
+  </aside>
+
+  <div id="deploy-toast" class="deploy-toast"></div>
+
+  <!-- ── 메인 영역 ────────────────────────────────────────── -->
+  <main class="flex-1 min-w-0 flex flex-col">
+
+    <!-- 상단바 -->
+    <header class="sticky top-0 z-30 flex items-center justify-between gap-4 border-b border-line bg-surface/85 px-5 py-3.5 backdrop-blur">
+      <div class="min-w-0">
+        <h1 class="truncate text-[17px] font-bold leading-tight">{% block page_title %}ChaosArena{% endblock %}</h1>
+        <p class="truncate text-[12px] text-faint">{% block page_sub %}{% endblock %}</p>
+      </div>
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        <span id="mission-nav-badge" class="hidden pill-badge" style="background:rgba(124,45,18,0.45);color:#fdba74;border-color:rgba(251,146,60,0.3);"></span>
+        <span id="topbar-health" class="pill-badge" style="background:rgba(30,41,59,0.6);color:#cbd5e1;border-color:rgba(148,163,184,0.18);">
+          <span id="topbar-health-dot" class="h-2 w-2 rounded-full bg-slate-500"></span>
+          <span id="topbar-health-text">클러스터 확인 중…</span>
+        </span>
+      </div>
+    </header>
+
+    <!-- 모바일 전용 탭 네비게이션 (사이드바가 숨겨지는 화면폭) -->
+    <nav class="md:hidden flex gap-1 overflow-x-auto border-b border-line bg-rail px-3 py-2">
+      {% set mnav = [('/', 'game', '⚡ 게임'), ('/monitor', 'monitor', '📊 대시보드'), ('/records', 'records', '🏆 기록'), ('/cicd', 'cicd', '🚀 CI/CD'), ('/infra', 'infra', '🌐 인프라')] %}
+      {% for path, key, label in mnav %}
+      <a href="{{ path }}" class="shrink-0 rounded-lg px-3 py-1.5 text-[13px] font-semibold {% if active_page == key %}bg-accent/10 text-ink{% else %}text-subink{% endif %}">{{ label }}</a>
+      {% endfor %}
+    </nav>
+
+    <div class="p-5">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
 
 <script>
 // LOCAL_MODE 여부는 배포 중 바뀌지 않으므로 페이지 로드 시 한 번만 확인한다.
@@ -177,33 +216,77 @@
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
-    if (data.local_mode) {
-      document.getElementById('local-mode-badge').style.display = 'inline-block';
-    }
-  } catch (e) {
-    // 배지 표시는 부가 정보라 실패해도 페이지 동작에는 영향 없음
-  }
+    if (data.local_mode) document.getElementById('local-mode-badge').classList.remove('hidden');
+  } catch (e) {}
 })();
 
-// 미션 진행 상황 배지: 게임 페이지가 아니어도 복구 중인지 알 수 있게 1초마다 확인한다.
-// (완료 판정/기록 갱신은 하지 않는 조회 전용 엔드포인트라 게임 페이지의 랭크 연출과 충돌하지 않는다)
+// 상단바 클러스터 헬스 칩: 모든 페이지 공통으로 3초마다 갱신 (운영 콘솔 일관성)
+async function refreshTopbarHealth() {
+  const dot = document.getElementById('topbar-health-dot');
+  const txt = document.getElementById('topbar-health-text');
+  try {
+    const res = await fetch('/api/pods');
+    const data = await res.json();
+    if (data.error || !data.pods) { dot.className = 'h-2 w-2 rounded-full bg-slate-500'; txt.innerText = '클러스터 확인 불가'; return; }
+    const ready = data.pods.filter(p => p.ready).length;
+    const total = data.pods.length;
+    const allReady = total > 0 && ready === total;
+    dot.className = 'h-2 w-2 rounded-full ' + (allReady ? 'bg-good' : 'bg-bad');
+    if (!allReady) dot.style.animation = 'pulse 1.2s ease-in-out infinite'; else dot.style.animation = '';
+    txt.innerHTML = (allReady ? '정상' : '복구 중') + ` · Ready ${ready}/${total}`;
+  } catch (e) { dot.className = 'h-2 w-2 rounded-full bg-slate-500'; txt.innerText = '클러스터 확인 불가'; }
+}
+setInterval(refreshTopbarHealth, 3000);
+refreshTopbarHealth();
+
+// 미션 진행 상황 배지: 어느 페이지에서든 복구 중인지 1초마다 확인 (조회 전용 API).
 async function refreshMissionNavBadge() {
   try {
     const res = await fetch('/api/mission/peek');
     const data = await res.json();
     const badge = document.getElementById('mission-nav-badge');
     if (data.active) {
-      badge.style.display = 'inline-block';
-      badge.innerText = `🎯 복구 중... ${data.elapsed.toFixed(1)}초`;
+      badge.classList.remove('hidden');
+      badge.style.animation = 'pulse 1.4s ease-in-out infinite';
+      badge.innerText = `🎯 복구 중… ${data.elapsed.toFixed(1)}초`;
     } else {
-      badge.style.display = 'none';
+      badge.classList.add('hidden');
     }
-  } catch (e) {
-    // 배지 표시는 부가 정보라 실패해도 페이지 동작에는 영향 없음
-  }
+  } catch (e) {}
 }
 setInterval(refreshMissionNavBadge, 1000);
 refreshMissionNavBadge();
+
+// 배포 빌드 배지 + "방금 배포됨" 토스트: /api/status의 build_number가 바뀌면
+// Jenkins CI/CD가 그 사이에 새 이미지를 배포했다는 뜻이다. 페이지 새로고침 없이
+// 폴링만으로 감지하므로, 어느 페이지를 보고 있어도 배포 순간을 놓치지 않는다.
+let lastSeenBuildNumber = null;
+let deployToastTimer = null;
+function showDeployToast(text, buildNumber) {
+  const el = document.getElementById('deploy-toast');
+  el.innerText = text;
+  el.classList.add('show');
+  clearTimeout(deployToastTimer);
+  deployToastTimer = setTimeout(() => el.classList.remove('show'), 4000);
+}
+async function refreshDeployInfo() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    const badge = document.getElementById('deploy-build-badge');
+    if (data.build_number) {
+      badge.innerText = `빌드 #${data.build_number}` + (data.git_commit ? ` · ${data.git_commit}` : '');
+      badge.classList.remove('hidden');
+      // 첫 폴링(lastSeenBuildNumber === null)은 "새로 배포됨"이 아니라 "페이지를 새로 연 것"이므로 토스트를 안 띄운다.
+      if (lastSeenBuildNumber !== null && data.build_number !== lastSeenBuildNumber) {
+        showDeployToast(`🚀 새 버전이 배포되었습니다 (빌드 #${data.build_number})`, data.build_number);
+      }
+      lastSeenBuildNumber = data.build_number;
+    }
+  } catch (e) {}
+}
+setInterval(refreshDeployInfo, 5000);
+refreshDeployInfo();
 </script>
 {% block extra_script %}{% endblock %}
 </body>

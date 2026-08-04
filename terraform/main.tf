@@ -1,3 +1,5 @@
+# KR1(판교): 메모리 쿼터가 빠듯해 정식 스펙(r2.c4m16) 대신 최소 스펙(m2.c2m4, 2vCPU/4GB)으로
+# 우선 테스트 구축한다. 멀티클러스터+GSLB 파이프라인 검증 후 쿼터 확보되면 4c16으로 재구축 예정.
 module "cluster_kr1" {
   source = "./modules/chaos-cluster"
   providers = {

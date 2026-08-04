@@ -834,9 +834,13 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   `_build_aux_snapshot` + `_refresh_regions_loop`에 aux 캐시 추가, `build_mock_aux_health_all`,
   `GET /api/aux-health`·`GET /api/aux-health/all`), `templates/infra.html`(파이프라인 세로
   레이아웃 CSS 전면 개편, `auxChip`/`auxRow` 실헬스체크 렌더러).
-- **라이브 검증 대기**: Redis·모니터링은 기존 env 그대로라 재배포 즉시 실측 헬스체크가 되고,
-  Jenkins·ArgoCD는 `ChaosArena-manifests`의 두 Deployment에 `JENKINS_HEALTH_URL`/
-  `ARGOCD_HEALTH_URL`(클러스터 내부 Service DNS)을 1회 수동 반영해야 활성화된다.
+- **라이브 최종 검증 완료**: `JENKINS_HEALTH_URL`/`ARGOCD_HEALTH_URL`을 두 리전 매니페스트에
+  반영하고, ArgoCD TLS 검증 문제(아래 트러블슈팅)까지 고친 뒤 KR1·KR2 양쪽 다 Redis·모니터링·
+  Jenkins·ArgoCD 4개 칩 전부 초록으로 확인. 부수적으로 **KR1의 kube-prometheus-stack이 설치는
+  돼 있었지만 `PROMETHEUS_URL`이 매니페스트에 안 심어져 있던 것**도 이번에 같이 발견해 추가
+  (Jenkins/ArgoCD와 같은 클래스의 "인프라는 있는데 앱이 모르는" 문제). 검증 중 KR1이 롤링
+  업데이트 중이라 ReplicaSet 2개가 잠깐 공존하는 순간도 파이프라인 트리가 의도대로 정확히
+  표현하는 것을 확인.
 - **실배포 트러블슈팅 — ArgoCD 칩만 계속 빨갛게 뜸**: 매니페스트 반영(수동 편집 중 git 히스토리
   분기로 `push` 거부 → `pull --no-rebase` → 충돌 마커 수동 정리 → merge 커밋 후 재push, 앞서
   겪은 "여러 Jenkins 빌드가 같은 파일을 동시에 커밋"과 같은 종류의 흔한 git 충돌이었을 뿐 YAML

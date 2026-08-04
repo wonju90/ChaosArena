@@ -100,6 +100,11 @@
   .lane-alerts.alerts-warning { color: #fde68a; background: rgba(251,191,36,0.14); border-color: rgba(251,191,36,0.4); }
   .lane-alerts.alerts-critical { color: #fca5a5; background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.4); }
 
+  .gslb-duration {
+    text-align: center; font-size: 11px; color: #7dd3fc; margin-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+
   /* GSLB 박스 안, 페일오버 이력 미니 로그 */
   .failover-history { margin-top: 10px; padding-top: 9px; border-top: 1px dashed rgba(56,189,248,0.18); }
   .failover-history-title { font-size: 10.5px; font-weight: 800; color: #7dd3fc; margin-bottom: 5px; }
@@ -243,6 +248,7 @@
         <span id="gslb-kr2" class="gslb-side"><span class="gslb-side-dot"></span>KR2 · 평촌</span>
       </div>
       <div id="gslb-hint" class="text-center text-[11px] text-faint">확인 중…</div>
+      <div id="gslb-duration" class="gslb-duration"></div>
       <div id="failover-history" class="failover-history"></div>
     </div>
     <div class="flow-branch"></div>
@@ -491,6 +497,25 @@ function renderInfraFlow(reg, topo, aux, alerts) {
   }
 }
 
+// 현재 GSLB 상태가 시작된 시각(페일오버 이력의 최신 이벤트) — 매초 째깍이는 지속시간 표시용.
+// 이력이 비었거나 마지막 이벤트의 to가 현재 gslb_target과 안 맞으면(막 전환된 직후 등) null로
+// 둬서, 틀린 값을 지어내 보여주지 않는다("판정 중…"과 같은 정직한 미확정 표시 원칙).
+let gslbSince = null;
+let gslbSinceTarget = null;
+
+function updateGslbDuration() {
+  const el = document.getElementById('gslb-duration');
+  if (!el) return;
+  if (!gslbSince) { el.innerText = ''; return; }
+  const startMs = Date.parse(gslbSince);
+  if (Number.isNaN(startMs)) { el.innerText = ''; return; }
+  const diffSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+  const m = Math.floor(diffSec / 60);
+  const s = diffSec % 60;
+  const label = (REGION_LABEL[gslbSinceTarget] || gslbSinceTarget).split(' · ')[0];
+  el.innerText = `${label} 상태가 ${m}분 ${s}초째 유지 중`;
+}
+
 function renderFailoverHistory(data) {
   const el = document.getElementById('failover-history');
   if (!data.available) {
@@ -516,8 +541,20 @@ async function refreshInfra() {
       fetch('/api/regions'), fetch('/api/topology/all'), fetch('/api/aux-health/all'),
       fetch('/api/alerts/all'), fetch('/api/failover-history'),
     ]);
-    renderInfraFlow(await regRes.json(), await topoRes.json(), await auxRes.json(), await alertsRes.json());
-    renderFailoverHistory(await historyRes.json());
+    const reg = await regRes.json();
+    const historyData = await historyRes.json();
+    renderInfraFlow(reg, await topoRes.json(), await auxRes.json(), await alertsRes.json());
+    renderFailoverHistory(historyData);
+
+    const events = historyData.available ? (historyData.events || []) : [];
+    if (reg.available && reg.gslb_target && events.length && events[0].to === reg.gslb_target) {
+      gslbSince = events[0].at;
+      gslbSinceTarget = reg.gslb_target;
+    } else {
+      gslbSince = null;
+      gslbSinceTarget = null;
+    }
+    updateGslbDuration();
   } catch (err) {
     document.getElementById('infra-flow').innerHTML =
       '<div class="apptree-empty">⚠ 인프라 상태를 불러오지 못했습니다.</div>';
@@ -525,6 +562,7 @@ async function refreshInfra() {
 }
 
 setInterval(refreshInfra, 5000);
+setInterval(updateGslbDuration, 1000);
 refreshInfra();
 </script>
 {% endblock %}

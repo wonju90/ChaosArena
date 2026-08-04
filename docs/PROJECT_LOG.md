@@ -801,6 +801,43 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **라이브 검증 대기**: 실배포 후 실제 HPA 스케일아웃(부하 → 3→6) 시 두 리전 트리가 함께 뜨고
   한쪽 리전을 내리면 그 블록만 "응답 없음"으로 바뀌는 것 확인 예정.
 
+### 4.37 /infra UI 개편 — 파이프라인 강조형 재설계 + CI/CD 상태 실제 헬스체크로 전환 ⭐
+
+- **UI 방향 재설계**: 사용자 피드백("전보다 낫지만 더 개선할 방향?")에 따라 세 가지 방향(상태
+  요약 우선 / 파이프라인 강조형 / 미니멀 정돈)을 ASCII 미리보기로 제시하고 **파이프라인
+  강조형**으로 확정. `Ingress(작은 필) → Deploy(허브, 가장 큰 카드 — 파드스케일/CPU 진행률
+  바 포함) → RS(컴팩트 필) → Pod(작고 흐린 잎, 접미사+age만 표시)`로 세로 연결. CPU%가 HPA
+  목표의 1.6배를 넘으면 막대가 초록→빨강으로 바뀌어 상태가 색으로 즉시 읽힌다. 파드 전체
+  정보(이름/노드/phase)는 title 툴팁으로 이동.
+- **계기 — Redis/모니터링/Jenkins/ArgoCD 줄이 실제로는 장식이었다**: 재배포 확인 중 실제로
+  Jenkins 파드가 죽어있었는데도 이 줄은 계속 멀쩡하게 보였다(정적 텍스트였을 뿐 헬스체크가
+  아니었음). 이 대시보드가 "그럴듯한 그림"이 아니라 실제 장애 탐지 도구가 되도록, 4개 항목
+  모두 실제 헬스체크로 바꿨다: Redis는 기존 `get_redis_client()`로 `PING`, 모니터링은 기존
+  `PROMETHEUS_URL`에 `/-/healthy` 호출, Jenkins/ArgoCD는 클러스터 내부 Service URL(신규
+  `JENKINS_HEALTH_URL`/`ARGOCD_HEALTH_URL` env)로 HTTP 응답 여부만 확인(특정 상태 코드를
+  요구하지 않음 — 리다이렉트/로그인 페이지든 "연결 자체가 되는지"가 핵심).
+- **"미설정"과 "죽음"을 구분**: 위 4개 env 중 하나가 비어있으면(아직 매니페스트에 안 넣은
+  경우) 그 항목은 `null`(미설정, 회색 그대로)이지, `false`(빨강)로 단정하지 않는다 — GSLB
+  대상을 추측하지 않고 실제 확인될 때까지 `null`로 두던 것과 같은 원칙(22.5절).
+- **죽으면 흐려지는 게 아니라 튀어나온다**: 기존엔 리전 전체가 죽었을 때만 부속 컴포넌트 줄
+  전체가 흐려졌는데, 이번엔 리전은 멀쩡한데 서비스 하나만 죽는 경우(정확히 이번에 겪은
+  Jenkins 사고)를 위해 그 칩만 빨간 배경/테두리로 **더 눈에 띄게** 만들었다 — "죽은 걸 더
+  흐리게" 만드는 건 잘못된 신호라는 판단.
+- **자기 리전은 로컬, 상대 리전은 HTTP 프록시**: 토폴로지(4.36절)와 완전히 같은 구조 —
+  `GET /api/aux-health`(1차, 자기 자신만) / `GET /api/aux-health/all`(통합, 백그라운드
+  스레드가 5초마다 상대 리전 것까지 미리 가져다 캐시). 크로스리전 크레덴셜 추가 없음.
+- **로컬 검증(실측)**: LOCAL_MODE 목업(4개 전부 초록) 확인 후, 스크래치 사본에서 `jenkins:
+  False, argocd: None`으로 강제해 헤드리스 Chrome 스크린샷 — Jenkins 칩만 빨갛게 튀고
+  ArgoCD는 회색 그대로(미설정)인 것을 확인.
+- **변경 파일**: `app.py`(`JENKINS_HEALTH_URL`/`ARGOCD_HEALTH_URL` 설정, `_check_http_reachable`/
+  `_check_redis_health`/`_check_prometheus_health`/`_self_aux_health`/`_fetch_region_aux_health`/
+  `_build_aux_snapshot` + `_refresh_regions_loop`에 aux 캐시 추가, `build_mock_aux_health_all`,
+  `GET /api/aux-health`·`GET /api/aux-health/all`), `templates/infra.html`(파이프라인 세로
+  레이아웃 CSS 전면 개편, `auxChip`/`auxRow` 실헬스체크 렌더러).
+- **라이브 검증 대기**: Redis·모니터링은 기존 env 그대로라 재배포 즉시 실측 헬스체크가 되고,
+  Jenkins·ArgoCD는 `ChaosArena-manifests`의 두 Deployment에 `JENKINS_HEALTH_URL`/
+  `ARGOCD_HEALTH_URL`(클러스터 내부 Service DNS)을 1회 수동 반영해야 활성화된다.
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.

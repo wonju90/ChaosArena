@@ -146,17 +146,27 @@
   .pod-dot.bad { background: #ef4444; }
   .pod-age { color: #5c6b81; font-weight: 600; }
 
-  /* ── 리전 부속 컴포넌트 — 정적 정보라 허브보다 항상 흐리고 작게 ── */
+  /* ── 리전 부속 컴포넌트 — 평소엔 허브보다 흐리고 작지만, 실제로 죽으면 오히려 빨갛게 튀어나온다.
+     ("죽은 서비스가 더 흐려지는" 건 잘못된 신호 — Jenkins 파드가 실제로 죽었을 때 이 줄이
+     아무 반응 없던 게 이번 개선의 계기였다.) */
   .lane-aux {
     display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;
     margin-top: 16px; padding-top: 12px; border-top: 1px dashed rgba(148,163,184,0.10);
   }
   .aux-chip {
+    display: inline-flex; align-items: center; gap: 5px;
     font-size: 10.5px; font-weight: 700; color: #74839a;
     background: rgba(255,255,255,0.015); border: 1px solid rgba(148,163,184,0.08);
     padding: 4px 10px; border-radius: 7px;
+    transition: color 0.3s ease, background 0.3s ease, border-color 0.3s ease;
   }
-  .aux-chip.aux-off { opacity: 0.35; }
+  .aux-dot { width: 6px; height: 6px; border-radius: 50%; background: #3a4a63; flex: none; }
+  .aux-chip.aux-bad {
+    color: #fca5a5; background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.4);
+  }
+  .aux-chip.aux-bad .aux-dot { background: #ef4444; box-shadow: 0 0 6px rgba(239,68,68,0.6); }
+  .aux-chip.aux-ok .aux-dot { background: #22c55e; }
+  .aux-chip.aux-region-off { opacity: 0.35; }
 
   .apptree-empty { font-size: 12.5px; color: #8593a8; padding: 16px 4px; text-align: center; }
   .infra-checked-at { font-size: 11px; color: #64748b; text-align: right; margin-top: 4px; }
@@ -315,14 +325,30 @@ function pipeFlow(r) {
     ${podsHtml}`;
 }
 
-function auxRow(reachable) {
-  const off = reachable ? '' : 'aux-off';
+// health[key]가 true/false면 실측 헬스체크 결과, null/undefined면 "미설정"(URL을 아직 안 심음) —
+// 셋을 구분해서, 안 죽었는데 죽은 것처럼 보이지 않게 한다.
+function auxChip(icon, label, title, healthy, regionReachable) {
+  let cls = '';
+  if (!regionReachable) cls = 'aux-region-off';
+  else if (healthy === true) cls = 'aux-ok';
+  else if (healthy === false) cls = 'aux-bad';
+  const dotTitle = !regionReachable ? '리전 응답 없음'
+    : healthy === true ? '정상'
+    : healthy === false ? '응답 없음'
+    : '미설정';
+  return `<span class="aux-chip ${cls}" title="${esc(title)} · ${dotTitle}">
+    <span class="aux-dot"></span>${icon} ${label}
+  </span>`;
+}
+
+function auxRow(regionReachable, health) {
+  const h = health || {};
   return `
     <div class="lane-aux">
-      <span class="aux-chip ${off}" title="기록실(리더보드) · 리전 전용 인스턴스">🗄️ Redis</span>
-      <span class="aux-chip ${off}" title="Prometheus · Grafana · Alertmanager">📊 모니터링</span>
-      <span class="aux-chip ${off}" title="CI · 빌드 → 서명 → 매니페스트 커밋">🧰 Jenkins</span>
-      <span class="aux-chip ${off}" title="CD · GitOps Pull-Sync · selfHeal">🔄 ArgoCD</span>
+      ${auxChip('🗄️', 'Redis', '기록실(리더보드) · 리전 전용 인스턴스', h.redis, regionReachable)}
+      ${auxChip('📊', '모니터링', 'Prometheus · Grafana · Alertmanager', h.prometheus, regionReachable)}
+      ${auxChip('🧰', 'Jenkins', 'CI · 빌드 → 서명 → 매니페스트 커밋', h.jenkins, regionReachable)}
+      ${auxChip('🔄', 'ArgoCD', 'CD · GitOps Pull-Sync · selfHeal', h.argocd, regionReachable)}
     </div>`;
 }
 
@@ -366,11 +392,11 @@ function regionLane(r) {
         <span class="lane-title">☸️ ${esc(label)}</span>${roleTag}${servingBadge}${status}
       </div>
       ${body}
-      ${auxRow(r.reachable)}
+      ${auxRow(r.reachable, r.aux)}
     </div>`;
 }
 
-function renderInfraFlow(reg, topo) {
+function renderInfraFlow(reg, topo, aux) {
   const flow = document.getElementById('infra-flow');
 
   if (!reg.available) {
@@ -384,6 +410,8 @@ function renderInfraFlow(reg, topo) {
 
   const topoMap = {};
   (topo.regions || []).forEach((t) => { topoMap[t.id] = t; });
+  const auxMap = {};
+  (aux.regions || []).forEach((t) => { auxMap[t.id] = t.health; });
 
   const regions = reg.regions || [];
   flow.innerHTML = regions.map((rr) => regionLane({
@@ -393,6 +421,7 @@ function renderInfraFlow(reg, topo) {
     is_self: rr.is_self,
     serving: reg.gslb_target === rr.id,
     topo: topoMap[rr.id],
+    aux: auxMap[rr.id],
   })).join('');
 
   if (reg.checked_at) {
@@ -402,8 +431,10 @@ function renderInfraFlow(reg, topo) {
 
 async function refreshInfra() {
   try {
-    const [a, b] = await Promise.all([fetch('/api/regions'), fetch('/api/topology/all')]);
-    renderInfraFlow(await a.json(), await b.json());
+    const [a, b, c] = await Promise.all([
+      fetch('/api/regions'), fetch('/api/topology/all'), fetch('/api/aux-health/all'),
+    ]);
+    renderInfraFlow(await a.json(), await b.json(), await c.json());
   } catch (e) {
     document.getElementById('infra-flow').innerHTML =
       '<div class="apptree-empty">⚠ 인프라 상태를 불러오지 못했습니다.</div>';

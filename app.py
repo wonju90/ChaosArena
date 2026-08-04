@@ -90,6 +90,13 @@ REDIS_HOST = os.environ.get("REDIS_HOST", "")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 
+# 인프라 지도(/infra)의 CI/CD 상태 칩이 "장식"이 아니라 실제 헬스체크가 되게 하려는 용도 —
+# 클러스터 내부 Service DNS 주소(예: http://jenkins.jenkins.svc.cluster.local:8080/login).
+# PROMETHEUS_URL/REDIS_HOST와 같은 패턴: 비어있으면 "미설정"으로 조용히 저하하고, 거짓으로
+# 정상/비정상을 단정하지 않는다.
+JENKINS_HEALTH_URL = os.environ.get("JENKINS_HEALTH_URL", "")
+ARGOCD_HEALTH_URL = os.environ.get("ARGOCD_HEALTH_URL", "")
+
 # LOCAL_MODE에서 사용할 가짜 파드 목록 (이름, 노드) - EXPECTED_REPLICAS 기본값(3)과 개수를 맞춤
 MOCK_PODS = [
     ("chaos-demo-mock-a", "local-node-1"),
@@ -566,6 +573,19 @@ def build_mock_topology_all():
     }
 
 
+def build_mock_aux_health_all():
+    """LOCAL_MODE용 — 두 리전 부속 컴포넌트 상태 목업. 전부 정상으로 보여준다."""
+    ok_all = {"redis": True, "prometheus": True, "jenkins": True, "argocd": True}
+    return {
+        "available": True,
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "regions": [
+            {"id": "kr1", "label": "판교", "is_self": True, "available": True, "health": ok_all},
+            {"id": "kr2", "label": "평촌", "is_self": False, "available": True, "health": ok_all},
+        ],
+    }
+
+
 def build_mock_deploy_history():
     """LOCAL_MODE용 가짜 배포 히스토리 — 성공 이벤트 몇 개 + 롤백 1건을 섞어 화면 확인용으로 보여준다."""
     return [
@@ -774,12 +794,103 @@ def _build_topology_snapshot():
     }
 
 
+# ── 부속 컴포넌트(Redis/모니터링/Jenkins/ArgoCD) 헬스체크 — 더는 장식이 아니게 ──
+# 계기: Jenkins 파드가 실제로 죽어있었는데도 /infra의 이 줄은 계속 멀쩡하게 보였다(순전히
+# 정적 텍스트였음). Redis/Prometheus는 이미 있는 연동(get_redis_client/PROMETHEUS_URL)을
+# 그대로 재사용하고, Jenkins/ArgoCD는 클러스터 내부 Service로 새로 확인한다. 자기 리전은
+# 로컬에서 직접, 상대 리전은 그쪽의 /api/aux-health를 HTTP로 가져온다(토폴로지와 동일한
+# 프록시 패턴 - 크로스리전 크레덴셜 없음).
+_aux_cache = {"available": True, "checked_at": None, "regions": []}
+
+
+def _check_http_reachable(url):
+    """
+    Jenkins/ArgoCD 내부 Service가 응답하는지만 본다 - 로그인 페이지(200)든 HTTPS 리다이렉트든
+    "연결 자체가 되는지"가 핵심이라, 특정 상태 코드를 요구하지 않는다(응답을 받으면 살아있는
+    것, 커넥션 실패/타임아웃이면 죽은 것 - 이번에 실제로 겪은 장애가 정확히 후자였다).
+    """
+    try:
+        requests.get(url, timeout=2)
+        return True
+    except requests.RequestException as e:
+        print(f"헬스체크 실패({url}): {e}")
+        return False
+
+
+def _check_redis_health():
+    """REDIS_HOST가 비어있으면(미설정) None, 설정됐는데 ping 실패면 False - 죽었다고 단정하지
+    않고 "미설정"과 "죽음"을 구분한다(jenkins/argocd와 같은 null 관용구)."""
+    if not REDIS_HOST:
+        return None
+    client = get_redis_client()
+    try:
+        return bool(client.ping())
+    except redis.RedisError as e:
+        print(f"Redis 헬스체크 실패: {e}")
+        return False
+
+
+def _check_prometheus_health():
+    if not PROMETHEUS_URL:
+        return None
+    try:
+        resp = requests.get(f"{PROMETHEUS_URL}/-/healthy", timeout=2)
+        return resp.status_code == 200
+    except requests.RequestException as e:
+        print(f"Prometheus 헬스체크 실패: {e}")
+        return False
+
+
+def _self_aux_health():
+    """이 리전(자기 자신)의 부속 컴포넌트 상태. 대응하는 설정(REDIS_HOST/PROMETHEUS_URL/
+    JENKINS_HEALTH_URL/ARGOCD_HEALTH_URL)이 비어있으면 그 항목만 None(미설정)으로 - 죽었다고
+    단정하지 않고 프런트에서 "미설정"과 "응답 없음"을 구분해 표시한다."""
+    return {
+        "redis": _check_redis_health(),
+        "prometheus": _check_prometheus_health(),
+        "jenkins": _check_http_reachable(JENKINS_HEALTH_URL) if JENKINS_HEALTH_URL else None,
+        "argocd": _check_http_reachable(ARGOCD_HEALTH_URL) if ARGOCD_HEALTH_URL else None,
+    }
+
+
+def _fetch_region_aux_health(url):
+    """상대 리전의 /api/aux-health(자기 자신만 담긴 1차 응답)를 HTTP로 가져온다."""
+    try:
+        data = requests.get(f"{url}/api/aux-health", timeout=2).json()
+        return data.get("health") if data.get("available") else None
+    except (requests.RequestException, ValueError) as e:
+        print(f"리전 부속 컴포넌트 상태 확인 실패({url}): {e}")
+        return None
+
+
+def _build_aux_snapshot():
+    results = []
+    for region in REGIONS:
+        is_self = region["id"] == APP_VERSION
+        health = _self_aux_health() if is_self else _fetch_region_aux_health(region["url"])
+        results.append(
+            {
+                "id": region["id"],
+                "label": region["label"],
+                "is_self": is_self,
+                "available": health is not None,
+                "health": health,
+            }
+        )
+    return {
+        "available": True,
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "regions": results,
+    }
+
+
 def _refresh_regions_loop():
-    global _regions_cache, _topology_cache
+    global _regions_cache, _topology_cache, _aux_cache
     while True:
         if REGIONS:
             _regions_cache = _build_regions_snapshot()  # 새 dict 통째로 스왑 -> 원자적, Lock 불필요
             _topology_cache = _build_topology_snapshot()
+            _aux_cache = _build_aux_snapshot()
         time.sleep(5)
 
 
@@ -1033,6 +1144,40 @@ def api_topology_all():
         return jsonify({"available": True, "checked_at": checked, "regions": [region]})
 
     return jsonify(_topology_cache)
+
+
+@app.route("/api/aux-health")
+def api_aux_health():
+    """
+    1차(자기 리전) 부속 컴포넌트 헬스체크 — /api/topology와 같은 역할 분담: (1) 상대 리전이
+    HTTP로 가져가 자기 화면에 합침(_fetch_region_aux_health), (2) 아래 /api/aux-health/all이
+    self 값으로 사용.
+    """
+    checked = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if LOCAL_MODE:
+        return jsonify({"available": True, "region": APP_VERSION, "checked_at": checked,
+                         "health": {"redis": True, "prometheus": True, "jenkins": True, "argocd": True}})
+
+    return jsonify({"available": True, "region": APP_VERSION, "checked_at": checked, "health": _self_aux_health()})
+
+
+@app.route("/api/aux-health/all")
+def api_aux_health_all():
+    """
+    /infra의 Redis·모니터링·Jenkins·ArgoCD 칩이 폴링하는 통합 엔드포인트 — /api/topology/all과
+    완전히 같은 구조(자기 리전은 로컬, 상대는 백그라운드 캐시). Jenkins 파드가 실제로 죽어있던
+    사고를 계기로, 이 줄이 장식이 아니라 실제 헬스체크가 되도록 추가했다.
+    """
+    checked = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if LOCAL_MODE:
+        return jsonify(build_mock_aux_health_all())
+
+    if not REGIONS:
+        health = _self_aux_health()
+        region = {"id": APP_VERSION, "label": APP_VERSION, "is_self": True, "available": True, "health": health}
+        return jsonify({"available": True, "checked_at": checked, "regions": [region]})
+
+    return jsonify(_aux_cache)
 
 
 @app.route("/api/deploy-history")

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_icons.html" as ic %}
-{% block title %}인프라 지도 — ChaosArena{% endblock %}
-{% block page_title %}인프라 지도{% endblock %}
+{% block title %}월드맵 — ChaosArena{% endblock %}
+{% block page_title %}월드맵{% endblock %}
 {% block page_sub %}GSLB → 판교/평촌 리전 → chaos-demo(Deployment·ReplicaSet·Pod)까지, 전체 인프라 흐름을 한 화면에서 실시간으로 관찰합니다{% endblock %}
 
 {% block extra_style %}
@@ -337,11 +337,13 @@ function pipeFlow(r) {
     hpaNote = `<div class="pipe-hpa-note">HPA ${d.min} → ${d.max}</div>`;
   }
 
+  // 표시용 접미사일 뿐 실제 리소스 이름(양쪽 리전 다 "chaos-demo")은 그대로 둔다 — 두 카드가
+  // 나란히 보일 때 구분되도록 화면에서만 리전 id를 붙인다.
   const deployHtml = `
     <div class="pipe-deploy">
       <div class="pipe-deploy-head">
         <span class="pipe-deploy-kind">deploy</span>
-        <span class="pipe-deploy-name">${esc(d.name)}</span>
+        <span class="pipe-deploy-name">${esc(d.name)}-${esc(r.id)}</span>
       </div>
       <div class="pipe-metric">
         <div class="pipe-metric-row"><span>파드 스케일</span><b>현재 ${d.current} · 목표 ${d.desired}</b></div>

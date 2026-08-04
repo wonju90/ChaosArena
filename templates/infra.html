@@ -43,15 +43,20 @@
   @media (min-width: 1100px) {
     .flow-branch { display: none; }
     .flow-branch-fork {
+      /* padding-top을 없앤다: 예전엔 14px 패딩이 드롭 막대를 가로 바에서 아래로 밀어내
+         "바 ── (빈틈 16px) ── 드롭막대"처럼 끊겨 보였다(픽셀로 실측). 이제 드롭 막대가
+         가로 바 바로 아래에서 시작해 카드 상단까지 한 줄로 이어진다. */
       display: grid; grid-template-columns: 1fr 1fr; gap: 12px; position: relative;
-      border-top: 3px solid #38bdf8; padding-top: 14px;
+      border-top: 3px solid #38bdf8; padding-top: 0;
       box-shadow: 0 -2px 6px rgba(56,189,248,0.35);
     }
     .flow-branch-fork::before {
       content: ''; position: absolute; top: -14px; left: 50%; width: 3px; height: 14px;
       background: #38bdf8; transform: translateX(-50%); box-shadow: 0 0 6px rgba(56,189,248,0.6);
     }
-    .flow-branch-drop { width: 3px; height: 14px; background: #38bdf8; margin: 0 auto; box-shadow: 0 0 6px rgba(56,189,248,0.6); }
+    /* 높이 28px = 예전 (패딩14 + 막대14)와 같아 카드까지의 전체 간격은 그대로 유지하되,
+       빈틈 없이 바에서 카드 상단까지 꽉 채워 연결한다. */
+    .flow-branch-drop { width: 3px; height: 28px; background: #38bdf8; margin: 0 auto; box-shadow: 0 0 6px rgba(56,189,248,0.6); }
   }
 
   /* ── 리전 레인 (판교/평촌을 좌우 2열로 나란히) ── */

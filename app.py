@@ -103,6 +103,11 @@ REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 JENKINS_HEALTH_URL = os.environ.get("JENKINS_HEALTH_URL", "")
 ARGOCD_HEALTH_URL = os.environ.get("ARGOCD_HEALTH_URL", "")
 
+# 인프라 지도(/infra)에 "지금 이 리전에 활성 알림이 몇 개인지"를 보여주기 위한 Alertmanager
+# 내부 Service 주소. PROMETHEUS_URL과 같은 클러스터(kube-prometheus-stack Helm 릴리즈)가 만든
+# Service라 이름 규칙이 같다. 비어있으면 "미연동"으로 저하한다.
+ALERTMANAGER_URL = os.environ.get("ALERTMANAGER_URL", "")
+
 # LOCAL_MODE에서 사용할 가짜 파드 목록 (이름, 노드) - EXPECTED_REPLICAS 기본값(3)과 개수를 맞춤
 MOCK_PODS = [
     ("chaos-demo-mock-a", "local-node-1"),
@@ -724,6 +729,39 @@ def _check_gslb_target():
         return None
 
 
+# ── 페일오버 이력 — GSLB 대상이 바뀐 순간을 리전 전용 Redis에 남겨둔다 ──
+# gslb_target은 리전별 데이터가 아니라 "공개 도메인이 지금 어디를 가리키는지"라는 전역적인
+# 사실이라, 어느 리전 Redis에 남기든 내용은 사실상 같다 - 그래서 /infra는 상대 리전 것까지
+# 합치지 않고 자기 리전(self)의 기록만 보여준다("이 화면이 관찰한 페일오버 이력"이라는 정직한
+# 프레이밍). 파드가 여러 개(3~6개)라 동시에 같은 전환을 감지할 수 있는데, "마지막으로 기록된
+# to 값과 다를 때만 기록"하는 방식으로 중복 기록을 크게 줄인다(완벽한 원자성 보장은 아니지만,
+# 이 정도 경합은 데모 스케일에서 감내할 만하다).
+FAILOVER_LOG_KEY = "gslb_failover_log"
+FAILOVER_LOG_MAX = 20
+
+
+def _record_failover_transition(new_target):
+    if new_target is None:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        last_raw = client.lindex(FAILOVER_LOG_KEY, -1)
+        last = json.loads(last_raw) if last_raw else None
+        if last and last.get("to") == new_target:
+            return  # 이미 같은 전환이 기록돼 있음 - 중복 기록 방지
+        event = {
+            "from": last.get("to") if last else None,
+            "to": new_target,
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        client.rpush(FAILOVER_LOG_KEY, json.dumps(event))
+        client.ltrim(FAILOVER_LOG_KEY, -FAILOVER_LOG_MAX, -1)
+    except redis.RedisError as e:
+        print(f"페일오버 이력 기록 실패: {e}")
+
+
 def _build_regions_snapshot():
     region_results = []
     for region in REGIONS:
@@ -738,9 +776,12 @@ def _build_regions_snapshot():
             }
         )
 
+    gslb_target = _check_gslb_target()
+    _record_failover_transition(gslb_target)
+
     return {
         "self": APP_VERSION,
-        "gslb_target": _check_gslb_target(),
+        "gslb_target": gslb_target,
         "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "regions": region_results,
     }
@@ -896,13 +937,78 @@ def _build_aux_snapshot():
     }
 
 
+# ── 활성 알림(Alertmanager) — "죽었나 살았나"를 넘어 "지금 뭐가 알람 중인가"까지 ──
+# 위 aux 헬스체크가 컴포넌트 생사만 본다면, 이건 그 위에 한 겹 더 얹어 Alertmanager가 지금 들고
+# 있는 활성 알림 목록(억제/무음 제외)을 보여준다. 자기 리전은 로컬에서 직접, 상대 리전은 그쪽의
+# /api/alerts를 HTTP로 가져온다(토폴로지/aux-health와 완전히 같은 프록시 패턴).
+_alerts_cache = {"available": True, "checked_at": None, "regions": []}
+
+
+def _query_active_alerts():
+    """
+    ALERTMANAGER_URL이 비어있으면(미연동) None, 쿼리가 실패해도 None - "몰라서 못 보여준다"와
+    "0개다"를 구분해야 화면이 거짓으로 "알림 없음"이라고 단정하지 않는다.
+    """
+    if not ALERTMANAGER_URL:
+        return None
+    try:
+        resp = requests.get(
+            f"{ALERTMANAGER_URL}/api/v2/alerts",
+            params={"active": "true", "silenced": "false", "inhibited": "false"},
+            timeout=2,
+        )
+        data = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        print(f"Alertmanager 알림 조회 실패: {e}")
+        return None
+    return [
+        {
+            "name": a.get("labels", {}).get("alertname", "unknown"),
+            "severity": a.get("labels", {}).get("severity", "none"),
+        }
+        for a in data
+    ]
+
+
+def _fetch_region_active_alerts(url):
+    """상대 리전의 /api/alerts(자기 자신만 담긴 1차 응답)를 HTTP로 가져온다."""
+    try:
+        data = requests.get(f"{url}/api/alerts", timeout=2).json()
+        return data.get("alerts") if data.get("available") else None
+    except (requests.RequestException, ValueError) as e:
+        print(f"리전 알림 확인 실패({url}): {e}")
+        return None
+
+
+def _build_alerts_snapshot():
+    results = []
+    for region in REGIONS:
+        is_self = region["id"] == APP_VERSION
+        alerts = _query_active_alerts() if is_self else _fetch_region_active_alerts(region["url"])
+        results.append(
+            {
+                "id": region["id"],
+                "label": region["label"],
+                "is_self": is_self,
+                "available": alerts is not None,
+                "alerts": alerts or [],
+            }
+        )
+    return {
+        "available": True,
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "regions": results,
+    }
+
+
 def _refresh_regions_loop():
-    global _regions_cache, _topology_cache, _aux_cache
+    global _regions_cache, _topology_cache, _aux_cache, _alerts_cache
     while True:
         if REGIONS:
             _regions_cache = _build_regions_snapshot()  # 새 dict 통째로 스왑 -> 원자적, Lock 불필요
             _topology_cache = _build_topology_snapshot()
             _aux_cache = _build_aux_snapshot()
+            _alerts_cache = _build_alerts_snapshot()
         time.sleep(5)
 
 
@@ -1114,6 +1220,39 @@ def api_regions():
     return jsonify({"available": True, **_regions_cache})
 
 
+@app.route("/api/failover-history")
+def api_failover_history():
+    """
+    /infra의 'GSLB 페일오버 이력' 패널용 — 이 리전(self)이 관찰한 GSLB 대상 전환 기록을
+    최신순으로 돌려준다. gslb_target은 리전별 데이터가 아니라 전역적인 사실이라 상대 리전 것과
+    합치지 않는다("이 화면이 관찰한 이력"이라는 정직한 프레이밍). REDIS_HOST 미설정 클러스터에서는
+    다른 선택적 연동과 같은 패턴으로 available:false로 우아하게 저하한다.
+    """
+    if LOCAL_MODE:
+        return jsonify(
+            {
+                "available": True,
+                "events": [
+                    {"from": "kr2", "to": "kr1", "at": "2026-08-01T03:12:40Z"},
+                    {"from": "kr1", "to": "kr2", "at": "2026-08-01T03:11:20Z"},
+                ],
+            }
+        )
+
+    client = get_redis_client()
+    if client is None:
+        return jsonify({"available": False})
+
+    try:
+        raw = client.lrange(FAILOVER_LOG_KEY, -FAILOVER_LOG_MAX, -1)
+        events = [json.loads(e) for e in raw]
+        events.reverse()  # 최신이 먼저
+    except redis.RedisError as e:
+        return jsonify({"available": False, "error": f"Redis 조회 실패: {e}"})
+
+    return jsonify({"available": True, "events": events})
+
+
 @app.route("/api/topology")
 def api_topology():
     """
@@ -1190,6 +1329,49 @@ def api_aux_health_all():
         return jsonify({"available": True, "checked_at": checked, "regions": [region]})
 
     return jsonify(_aux_cache)
+
+
+@app.route("/api/alerts")
+def api_alerts():
+    """1차(자기 리전) 활성 알림 목록 - /api/aux-health와 같은 역할 분담(상대 리전이 HTTP로 가져감)."""
+    checked = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if LOCAL_MODE:
+        return jsonify({"available": True, "region": APP_VERSION, "checked_at": checked, "alerts": []})
+
+    alerts = _query_active_alerts()
+    return jsonify(
+        {"available": alerts is not None, "region": APP_VERSION, "checked_at": checked, "alerts": alerts or []}
+    )
+
+
+@app.route("/api/alerts/all")
+def api_alerts_all():
+    """
+    /infra의 '활성 알림' 배지가 폴링하는 통합 엔드포인트 — /api/aux-health/all과 완전히 같은 구조.
+    죽었나 살았나(aux-health)를 넘어, 지금 Alertmanager가 들고 있는 알림을 리전별로 보여준다.
+    """
+    checked = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if LOCAL_MODE:
+        return jsonify(
+            {
+                "available": True,
+                "checked_at": checked,
+                "regions": [
+                    {"id": "kr1", "label": "판교", "is_self": True, "available": True, "alerts": []},
+                    {"id": "kr2", "label": "평촌", "is_self": False, "available": True, "alerts": []},
+                ],
+            }
+        )
+
+    if not REGIONS:
+        alerts = _query_active_alerts()
+        region = {
+            "id": APP_VERSION, "label": APP_VERSION, "is_self": True,
+            "available": alerts is not None, "alerts": alerts or [],
+        }
+        return jsonify({"available": True, "checked_at": checked, "regions": [region]})
+
+    return jsonify(_alerts_cache)
 
 
 @app.route("/api/deploy-history")

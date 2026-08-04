@@ -853,6 +853,47 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
   수정(신뢰 여부가 아니라 "응답이 오는지"만 보는 헬스체크이므로 안전). `urllib3.disable_warnings`로
   매 5초 반복되는 `InsecureRequestWarning` 로그도 같이 정리.
 
+### 4.38 Slack 알림 한글화 + /infra 3종 추가(GSLB Y자 분기선·활성 알림 배지·페일오버 이력) ⭐
+
+- **Slack 알림 한글화**: `chaos-demo.rules`(prometheusrule.yaml)의 커스텀 알림은 이미
+  `annotations.summary`에 한글이 들어있어 그대로 잘 오고 있었는데, kube-prometheus-stack이
+  기본으로 심어주는 규칙(`InfoInhibitor`, `etcdInsufficientMembers` 등)은 이름·설명이 전부
+  영어였다. `k8s/alertmanager-slack-values.yaml`/`-kr1.yaml`의 Slack `title`/`text` 템플릿에
+  Go 템플릿 if/else 체인을 추가해, **실제로 Slack에 온 것만 확인해서** 한글로 번역하고 모르는
+  alertname은 거짓으로 지어내지 않고 원문 그대로 통과시킨다(추측 대신 실제 확인 원칙). 특히
+  `etcdInsufficientMembers`는 "이 클러스터는 마스터 1대짜리 단일 노드 etcd라 원래 상시 발생하는
+  알림이고 실제 장애 신호는 아니다"라는 맥락까지 메시지에 넣어, 번역을 넘어 "이 알림을 무시해도
+  되는 이유"까지 설명하게 했다.
+- **GSLB → 리전 Y자 분기선**: 기존엔 GSLB 박스에서 리전 레인들로 내려가는 커넥터가 직선 하나뿐
+  이라 "여기서 갈라진다"는 느낌이 약했다. 파드 팬아웃(트리)에 이미 쓰던 것과 같은 시각 문법
+  (가로 바 + 양 끝 세로 틱)을 재사용해 Y자로 갈라지게 했다 — 좁은 화면(리전이 세로로 쌓임)에선
+  기존 직선 커넥터를 그대로 쓴다(리전이 하나의 열로 이어지므로 분기 자체가 필요 없음).
+- **활성 알림 배지**: 아까 만든 aux 헬스체크가 "컴포넌트가 죽었나 살았나"만 본다면, 이건 한 겹
+  더 얹어 Alertmanager가 지금 들고 있는 활성 알림(억제/무음 제외) 개수를 리전 레인에 배지로
+  보여준다. 새 크레덴셜 없이 기존 패턴(자기 리전은 로컬, 상대는 그쪽 `/api/alerts` HTTP 프록시,
+  백그라운드 스레드가 5초마다 미리 캐시)을 그대로 재사용. 심각도 중 가장 높은 것으로 배지 색을
+  정한다(critical > warning > info). `ALERTMANAGER_URL` 미설정이면 "미연동"으로 저하(0개라고
+  거짓 주장하지 않음). 스크래치 사본에서 warning 1개/critical+info 혼합 2개를 주입해, 각각
+  주황/빨강으로 정확히 색이 갈리는 것을 실측 확인.
+- **GSLB 페일오버 이력**: `gslb_target`이 바뀌는 순간을 리전 전용 Redis(`gslb_failover_log`
+  리스트, 최근 20건)에 기록한다. 이 값은 리전별 데이터가 아니라 "공개 도메인이 지금 어디를
+  가리키는지"라는 전역적인 사실이라, 상대 리전 것과 굳이 합치지 않고 **"이 화면이 관찰한
+  이력"**이라는 정직한 프레이밍으로 self 리전 기록만 보여준다. 파드가 여러 개(3~6개)라 같은
+  전환을 동시에 감지할 수 있는데, "마지막으로 기록된 to 값과 다를 때만 기록"하는 방식으로
+  중복을 크게 줄인다(완벽한 원자성은 아니지만 이 정도 경합은 데모 스케일에서 감내할 만하다고
+  판단 - 트레이드오프를 인지한 채로 단순한 방법을 택함).
+- **로컬 검증(실측)**: `/api/alerts/all`·`/api/failover-history` LOCAL_MODE 목업 확인, 헤드리스
+  Chrome 스크린샷으로 Y자 분기선·"알림 없음"(초록)·페일오버 이력 2건이 정상 렌더링되는 것,
+  스크래치 사본으로 알림 배지의 경고/심각 색 분기까지 확인.
+- **변경 파일**: `k8s/alertmanager-slack-values.yaml`/`-kr1.yaml`(Slack 한글화 템플릿),
+  `app.py`(`ALERTMANAGER_URL`, `_query_active_alerts`/`_fetch_region_active_alerts`/
+  `_build_alerts_snapshot`, `FAILOVER_LOG_KEY`/`_record_failover_transition`,
+  `GET /api/alerts`·`/api/alerts/all`·`/api/failover-history`), `templates/infra.html`
+  (Y자 분기선 CSS, `alertBadge`/`renderFailoverHistory` 렌더러).
+- **라이브 검증 대기**: Slack 한글화는 `helm upgrade`(두 리전) 필요, 알림 배지는
+  `ChaosArena-manifests`에 `ALERTMANAGER_URL` 1회 수동 반영 필요, 페일오버 이력은 이미 설정된
+  `REDIS_HOST` 그대로라 재배포 즉시 기록 시작(다음 페일오버 테스트부터 이력이 쌓임).
+
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.
 2. **추측 대신 실제 API 조회** — 이미지명/AZ명/VPC ID 등은 전부 직접 조회해 확정.

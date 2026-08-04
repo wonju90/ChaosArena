@@ -30,8 +30,23 @@
   @keyframes gslb-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
   .gslb-arrow { font-size: 17px; color: #475569; }
 
-  /* GSLB에서 두 리전으로 갈라지는 짧은 세로 커넥터 */
+  /* GSLB에서 두 리전으로 갈라지는 커넥터 — 좁은 화면(리전이 세로로 쌓임)에선 직선 하나,
+     넓은 화면(리전이 좌우 2열)에선 Y자로 갈라지는 바(파드 팬아웃과 같은 시각 문법 재사용) */
   .flow-branch { width: 2px; height: 18px; background: #2b3a52; margin: 0 auto; }
+  .flow-branch-fork { display: none; }
+  @media (min-width: 1100px) {
+    .flow-branch { display: none; }
+    .flow-branch-fork {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      width: 55%; max-width: 620px; margin: 0 auto; position: relative;
+      border-top: 2px solid #2b3a52; padding-top: 14px;
+    }
+    .flow-branch-fork::before {
+      content: ''; position: absolute; top: -14px; left: 50%; width: 2px; height: 14px;
+      background: #2b3a52; transform: translateX(-50%);
+    }
+    .flow-branch-drop { width: 2px; height: 14px; background: #2b3a52; }
+  }
 
   /* ── 리전 레인 (판교/평촌을 좌우 2열로 나란히) ── */
   .lane-list { display: grid; grid-template-columns: 1fr; gap: 12px; }
@@ -50,7 +65,7 @@
     0% { background: rgba(239,68,68,0.35); } 100% { background: rgba(239,68,68,0.06); }
   }
 
-  .lane-head { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
+  .lane-head { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-bottom: 14px; }
   .lane-title { font-size: 14.5px; font-weight: 800; color: #e8eef7; }
   .lane-role {
     font-size: 9.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
@@ -65,6 +80,25 @@
   .lane-status { font-size: 12px; font-weight: 700; margin-left: auto; }
   .lane-status.ok { color: #4ade80; }
   .lane-status.bad { color: #f87171; }
+
+  /* 활성 알림 배지 — 심각도 중 가장 높은 것으로 색을 정한다(critical > warning > info) */
+  .lane-alerts {
+    font-size: 10px; font-weight: 800; padding: 2px 8px; border-radius: 999px;
+    color: #64748b; background: rgba(148,163,184,0.12); border: 1px solid rgba(148,163,184,0.18);
+  }
+  .lane-alerts.alerts-none { color: #4ade80; background: rgba(34,197,94,0.10); border-color: rgba(34,197,94,0.22); }
+  .lane-alerts.alerts-info { color: #93c5fd; background: rgba(56,189,248,0.10); border-color: rgba(56,189,248,0.22); }
+  .lane-alerts.alerts-warning { color: #fde68a; background: rgba(251,191,36,0.14); border-color: rgba(251,191,36,0.4); }
+  .lane-alerts.alerts-critical { color: #fca5a5; background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.4); }
+
+  /* GSLB 박스 안, 페일오버 이력 미니 로그 */
+  .failover-history { margin-top: 10px; padding-top: 9px; border-top: 1px dashed rgba(56,189,248,0.18); }
+  .failover-history-title { font-size: 10.5px; font-weight: 800; color: #7dd3fc; margin-bottom: 5px; }
+  .failover-event {
+    font-size: 11px; color: #93a4bb; padding: 2px 0; font-variant-numeric: tabular-nums;
+  }
+  .failover-event b { color: #dbe6f3; }
+  .failover-empty { font-size: 11px; color: #64748b; }
 
   .tnode-dot { width: 9px; height: 9px; border-radius: 50%; background: #334155; flex: none; }
   .tnode-dot.ok { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.55); }
@@ -200,8 +234,10 @@
         <span id="gslb-kr2" class="gslb-side"><span class="gslb-side-dot"></span>KR2 · 평촌</span>
       </div>
       <div id="gslb-hint" class="text-center text-[11px] text-faint">확인 중…</div>
+      <div id="failover-history" class="failover-history"></div>
     </div>
     <div class="flow-branch"></div>
+    <div class="flow-branch-fork"><span class="flow-branch-drop"></span><span class="flow-branch-drop"></span></div>
 
     <!-- 리전 레인 (JS 렌더) -->
     <div id="infra-flow" class="lane-list">
@@ -352,6 +388,20 @@ function auxRow(regionReachable, health) {
     </div>`;
 }
 
+// alerts: null(미연동) | []( 정상, 0개) | [{name, severity}, ...] — 가장 높은 심각도로 배지 색을 정한다.
+function alertBadge(alerts) {
+  if (alerts === null || alerts === undefined) {
+    return '<span class="lane-alerts" title="ALERTMANAGER_URL 미설정">🔔 미연동</span>';
+  }
+  if (alerts.length === 0) {
+    return '<span class="lane-alerts alerts-none">🔔 알림 없음</span>';
+  }
+  const sevs = alerts.map((a) => a.severity);
+  const cls = sevs.includes('critical') ? 'alerts-critical' : sevs.includes('warning') ? 'alerts-warning' : 'alerts-info';
+  const names = alerts.map((a) => a.name).join(', ');
+  return `<span class="lane-alerts ${cls}" title="${esc(names)}">🔔 알림 ${alerts.length}개</span>`;
+}
+
 function regionLane(r) {
   const label = REGION_LABEL[r.id] || r.id;
   const roleTag = r.is_self
@@ -389,14 +439,14 @@ function regionLane(r) {
     <div class="region-lane ${stateCls}">
       <div class="lane-head">
         <span class="tnode-dot ${r.reachable ? 'ok' : 'bad'}"></span>
-        <span class="lane-title">☸️ ${esc(label)}</span>${roleTag}${servingBadge}${status}
+        <span class="lane-title">☸️ ${esc(label)}</span>${roleTag}${servingBadge}${alertBadge(r.alerts)}${status}
       </div>
       ${body}
       ${auxRow(r.reachable, r.aux)}
     </div>`;
 }
 
-function renderInfraFlow(reg, topo, aux) {
+function renderInfraFlow(reg, topo, aux, alerts) {
   const flow = document.getElementById('infra-flow');
 
   if (!reg.available) {
@@ -412,6 +462,8 @@ function renderInfraFlow(reg, topo, aux) {
   (topo.regions || []).forEach((t) => { topoMap[t.id] = t; });
   const auxMap = {};
   (aux.regions || []).forEach((t) => { auxMap[t.id] = t.health; });
+  const alertsMap = {};
+  (alerts.regions || []).forEach((t) => { alertsMap[t.id] = t.available ? t.alerts : null; });
 
   const regions = reg.regions || [];
   flow.innerHTML = regions.map((rr) => regionLane({
@@ -422,6 +474,7 @@ function renderInfraFlow(reg, topo, aux) {
     serving: reg.gslb_target === rr.id,
     topo: topoMap[rr.id],
     aux: auxMap[rr.id],
+    alerts: rr.id in alertsMap ? alertsMap[rr.id] : null,
   })).join('');
 
   if (reg.checked_at) {
@@ -429,13 +482,34 @@ function renderInfraFlow(reg, topo, aux) {
   }
 }
 
+function renderFailoverHistory(data) {
+  const el = document.getElementById('failover-history');
+  if (!data.available) {
+    el.innerHTML = '<div class="failover-empty">🕘 페일오버 이력: Redis 미연동</div>';
+    return;
+  }
+  const events = data.events || [];
+  if (!events.length) {
+    el.innerHTML = '<div class="failover-history-title">🕘 페일오버 이력</div><div class="failover-empty">아직 전환 기록이 없습니다.</div>';
+    return;
+  }
+  const rows = events.slice(0, 5).map((e) => {
+    const from = e.from ? (REGION_LABEL[e.from] || e.from).split(' · ')[0] : '?';
+    const to = (REGION_LABEL[e.to] || e.to).split(' · ')[0];
+    return `<div class="failover-event">${esc(e.at)} · ${esc(from)} → <b>${esc(to)}</b></div>`;
+  }).join('');
+  el.innerHTML = `<div class="failover-history-title">🕘 페일오버 이력 (최근 ${Math.min(5, events.length)}건)</div>${rows}`;
+}
+
 async function refreshInfra() {
   try {
-    const [a, b, c] = await Promise.all([
+    const [regRes, topoRes, auxRes, alertsRes, historyRes] = await Promise.all([
       fetch('/api/regions'), fetch('/api/topology/all'), fetch('/api/aux-health/all'),
+      fetch('/api/alerts/all'), fetch('/api/failover-history'),
     ]);
-    renderInfraFlow(await a.json(), await b.json(), await c.json());
-  } catch (e) {
+    renderInfraFlow(await regRes.json(), await topoRes.json(), await auxRes.json(), await alertsRes.json());
+    renderFailoverHistory(await historyRes.json());
+  } catch (err) {
     document.getElementById('infra-flow').innerHTML =
       '<div class="apptree-empty">⚠ 인프라 상태를 불러오지 못했습니다.</div>';
   }

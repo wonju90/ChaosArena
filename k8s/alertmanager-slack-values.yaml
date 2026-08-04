@@ -44,5 +44,12 @@ alertmanager:
             send_resolved: true
             # KR1에도 같은 스택이 생기면서(컨트롤 플레인 이중화), 같은 채널로 알림이 섞여 들어오니
             # 제목 접두어로 어느 리전 알림인지 구분한다(k8s/alertmanager-slack-values-kr1.yaml 참고).
-            title: "[KR2] {{ .CommonLabels.alertname }}"
-            text: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"
+            #
+            # 한글화: chaos-demo.rules(prometheusrule.yaml)의 커스텀 알림은 annotations.summary에
+            # 이미 한글이 들어있어 그대로 통과시키면 된다. 문제는 kube-prometheus-stack이 기본으로
+            # 심어주는 규칙(InfoInhibitor/etcdInsufficientMembers 등)은 이름·설명이 전부 영어라는 것 —
+            # 이건 실제로 Slack에 왔던 것만 확인해서 번역했고, 모르는 alertname은 거짓으로 지어내지
+            # 않고 원문 그대로 통과시킨다(아래 else 분기). 새 기본 알림을 보게 되면 이 if/else 체인에
+            # 한 줄만 추가하면 된다.
+            title: "[KR2] {{ if eq .CommonLabels.alertname \"InfoInhibitor\" }}ℹ️ 정보성 알림 억제 중{{ else if eq .CommonLabels.alertname \"etcdInsufficientMembers\" }}⚠️ etcd 멤버 수 부족{{ else }}{{ .CommonLabels.alertname }}{{ end }}"
+            text: "{{ if eq .CommonLabels.alertname \"InfoInhibitor\" }}info 등급 알림이 하나 이상 억제(inhibit)되고 있어요 - 더 심각한 알림이 이미 울리고 있다는 뜻이니 그 알림부터 확인하세요.{{ else if eq .CommonLabels.alertname \"etcdInsufficientMembers\" }}etcd 클러스터 멤버 수가 기준보다 적어요. 이 클러스터는 마스터 1대짜리 단일 노드 etcd라 원래 상시 발생하는 알림이고(HA 구성이 아님), 실제 장애 신호는 아니에요.{{ else }}{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}{{ end }}"

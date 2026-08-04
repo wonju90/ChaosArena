@@ -837,6 +837,17 @@ Jinja2 템플릿 상속(`base.html`)으로 공통 레이아웃·네비게이션�
 - **라이브 검증 대기**: Redis·모니터링은 기존 env 그대로라 재배포 즉시 실측 헬스체크가 되고,
   Jenkins·ArgoCD는 `ChaosArena-manifests`의 두 Deployment에 `JENKINS_HEALTH_URL`/
   `ARGOCD_HEALTH_URL`(클러스터 내부 Service DNS)을 1회 수동 반영해야 활성화된다.
+- **실배포 트러블슈팅 — ArgoCD 칩만 계속 빨갛게 뜸**: 매니페스트 반영(수동 편집 중 git 히스토리
+  분기로 `push` 거부 → `pull --no-rebase` → 충돌 마커 수동 정리 → merge 커밋 후 재push, 앞서
+  겪은 "여러 Jenkins 빌드가 같은 파일을 동시에 커밋"과 같은 종류의 흔한 git 충돌이었을 뿐 YAML
+  문법 문제는 아니었음) 후에도 Redis·모니터링·Jenkins는 초록인데 **ArgoCD만 KR1·KR2 양쪽 다
+  빨갛게** 떴다. 원인: `argocd-server`는 80번(http)으로 들어온 요청을 자체 서명 인증서를 쓰는
+  443번(https)으로 리다이렉트하는데, `requests`가 기본값(`verify=True`)으로 그 인증서를
+  검증하려다 `SSLCertVerificationError`로 실패 — 예전 GitHub 웹훅에서 겪은 것과 같은 자체 서명
+  인증서 문제(4.34절)였다. 로컬에서 자체 서명 인증서로 HTTPS 서버를 띄워 재현: `verify=True`는
+  실패, `verify=False`는 성공을 직접 확인 후 `_check_http_reachable`에 `verify=False` 추가로
+  수정(신뢰 여부가 아니라 "응답이 오는지"만 보는 헬스체크이므로 안전). `urllib3.disable_warnings`로
+  매 5초 반복되는 `InsecureRequestWarning` 로그도 같이 정리.
 
 ### 트러블슈팅에서 얻은 원칙
 1. **에러 메시지를 액면 그대로 믿지 말 것** — "Could not find user"는 실제로 엔드포인트 버전 문제였다. 일부러 틀린 입력으로 메시지가 변하는지 확인하는 이분법이 원인 격리에 효과적이었다.

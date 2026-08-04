@@ -31,6 +31,12 @@ from kubernetes.client.rest import ApiException
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 import redis
 import requests
+import urllib3
+
+# ArgoCD 내부 헬스체크(verify=False, 자체 서명 인증서라 검증을 끔)가 5초마다 도는데, 이때마다
+# InsecureRequestWarning이 로그에 찍히는 걸 막는다 - 이 경고는 "이 요청을 신뢰해도 되는지"에 대한
+# 경고인데, 애초에 우리는 신뢰 여부가 아니라 "응답이 오는지"만 보므로 알고 끈 것이다.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 
@@ -808,9 +814,15 @@ def _check_http_reachable(url):
     Jenkins/ArgoCD 내부 Service가 응답하는지만 본다 - 로그인 페이지(200)든 HTTPS 리다이렉트든
     "연결 자체가 되는지"가 핵심이라, 특정 상태 코드를 요구하지 않는다(응답을 받으면 살아있는
     것, 커넥션 실패/타임아웃이면 죽은 것 - 이번에 실제로 겪은 장애가 정확히 후자였다).
+
+    verify=False인 이유: argocd-server는 80번(http)으로 들어온 요청을 자체 서명(self-signed)
+    인증서를 쓰는 443번(https)으로 리다이렉트한다. requests는 리다이렉트를 따라가면서 기본값
+    (verify=True)이면 그 인증서를 못 믿겠다며 SSLError를 던지는데, 여기서는 "신뢰할 수 있는
+    사이트인가"가 아니라 "응답이 오는가"만 보는 것이므로 인증서 검증을 끌 필요가 있다(전에
+    GitHub 웹훅에서 겪은 것과 같은 자체 서명 인증서 문제 - CONCEPTS.md 참고).
     """
     try:
-        requests.get(url, timeout=2)
+        requests.get(url, timeout=2, verify=False)
         return True
     except requests.RequestException as e:
         print(f"헬스체크 실패({url}): {e}")

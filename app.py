@@ -209,6 +209,13 @@ RECORDS_KEY_RECENT_HISTORY = "records:recent_history"
 RECORDS_KEY_CURRENT_COMBO = "records:current_combo"
 RECORDS_KEY_BEST_COMBO = "records:best_combo"
 
+# CPU 부하 / 에러 주입 스위치(chaos_state)도 같은 이유로 Redis에 공유한다 - 파드가 여러 개일 때
+# Service에 sessionAffinity가 없어서 "켜기"/"끄기" 요청이 서로 다른 파드에 무작위로 도착한다.
+# 로컬 변수만 쓰면 실제로 부하를 태우는 파드가 "끄기" 요청을 못 받아 영원히 멈추지 않는 문제가
+# 있었다(HPA가 부하 해제 후에도 6→3으로 스케일 다운을 안 하던 원인).
+CHAOS_KEY_CPU_LOAD = "chaos:cpu_load"
+CHAOS_KEY_ERROR_MODE = "chaos:error_mode"
+
 _redis_client = None
 
 
@@ -683,14 +690,74 @@ def _cpu_burn():
         _ = sum(i * i for i in range(10000))  # 의미 없는 계산 반복 -> CPU 사용률 상승
 
 
+def _write_chaos_flag_to_redis(key, is_on):
+    """cpu_load/error_mode를 Redis에도 써서 다른 파드가 _sync_chaos_state_loop로 따라오게 한다.
+    Redis 미설정/장애 시에는 이 파드의 로컬 상태만 유효한 기존 동작으로 조용히 저하한다."""
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.set(key, "1" if is_on else "0")
+    except redis.RedisError as e:
+        print(f"Redis chaos_state 저장 실패({key}), 이 파드에만 반영됨: {e}")
+
+
+def _read_chaos_flag(key, fallback):
+    """토글 방향을 정할 때 이 파드의 로컬 값 대신 Redis의 최신 값을 우선 읽는다 - 로컬 값은
+    _sync_chaos_state_loop 주기(1초) 안에서는 stale할 수 있어서, 그 순간에 토글하면 의도한
+    반대 방향이 아니라 다시 같은 방향으로 뒤집힐 수 있다."""
+    client = get_redis_client()
+    if client is None:
+        return fallback
+    try:
+        value = client.get(key)
+    except redis.RedisError:
+        return fallback
+    return fallback if value is None else value == "1"
+
+
 def set_cpu_load(is_on):
-    """CPU 부하 스레드를 켜고 끄는 걸 한 곳에서 담당한다 (토글 버튼과 보스전 모드가 같이 사용)."""
+    """CPU 부하 스레드를 켜고 끄는 걸 한 곳에서 담당한다 (토글 버튼과 보스전 모드가 같이 사용).
+    파드가 여러 개일 때 Service에 sessionAffinity가 없어서 "켜기"/"끄기" 요청이 서로 다른
+    파드에 무작위로 떨어질 수 있다 - Redis에도 같이 써서, 실제로 부하를 태우고 있는 파드가
+    이 요청을 못 받았더라도 _sync_chaos_state_loop를 통해 몇 초 안에 멈추게 한다."""
     global _cpu_thread
     chaos_state["cpu_load"] = is_on
+    _write_chaos_flag_to_redis(CHAOS_KEY_CPU_LOAD, is_on)
     if is_on:
         # 데몬 스레드(daemon thread): 메인 프로그램이 끝나면 같이 종료되는 백그라운드 작업
         _cpu_thread = threading.Thread(target=_cpu_burn, daemon=True)
         _cpu_thread.start()
+
+
+def set_error_mode(is_on):
+    """에러 주입 모드 on/off. cpu_load와 같은 이유로 Redis에도 같이 쓴다."""
+    chaos_state["error_mode"] = is_on
+    _write_chaos_flag_to_redis(CHAOS_KEY_ERROR_MODE, is_on)
+
+
+def _sync_chaos_state_loop():
+    """다른 파드가 켜거나 끈 cpu_load/error_mode를 Redis에서 읽어와 이 파드의 로컬 chaos_state에
+    반영한다. _cpu_burn과 '/' 라우트의 에러 주입 체크는 로컬 chaos_state만 보고 동작하므로,
+    이 동기화가 없으면 "끄기" 요청이 다른 파드에 떨어졌을 때 이 파드는 영원히 멈추지 않는다."""
+    while True:
+        time.sleep(1)
+        client = get_redis_client()
+        if client is None:
+            continue
+        try:
+            cpu_val = client.get(CHAOS_KEY_CPU_LOAD)
+            if cpu_val is not None:
+                chaos_state["cpu_load"] = cpu_val == "1"
+            error_val = client.get(CHAOS_KEY_ERROR_MODE)
+            if error_val is not None:
+                chaos_state["error_mode"] = error_val == "1"
+        except redis.RedisError as e:
+            print(f"Redis chaos_state 동기화 실패: {e}")
+
+
+if REDIS_HOST:
+    threading.Thread(target=_sync_chaos_state_loop, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -1639,7 +1706,7 @@ def _run_chaos_kill(kill_count, also_cpu=False, also_error=False, mode_label="�
         if also_cpu:
             set_cpu_load(True)
         if also_error:
-            chaos_state["error_mode"] = True
+            set_error_mode(True)
 
         send_slack_message(f"🎲 [게임:{mode_label}] 장애 발생: {', '.join(targets)} (로컬 모드)")
         return jsonify({"killed": targets, "mode": mode_label})
@@ -1676,7 +1743,7 @@ def _run_chaos_kill(kill_count, also_cpu=False, also_error=False, mode_label="�
     if also_cpu:
         set_cpu_load(True)
     if also_error:
-        chaos_state["error_mode"] = True
+        set_error_mode(True)
 
     send_slack_message(f"🎲 [게임:{mode_label}] 장애 발생: {', '.join(target_names)}")
     return jsonify({"killed": target_names, "mode": mode_label})
@@ -1702,7 +1769,8 @@ def chaos_boss_mode():
 
 @app.route("/chaos/cpu", methods=["POST"])
 def chaos_cpu():
-    set_cpu_load(not chaos_state["cpu_load"])
+    current = _read_chaos_flag(CHAOS_KEY_CPU_LOAD, chaos_state["cpu_load"])
+    set_cpu_load(not current)
     state_text = "시작" if chaos_state["cpu_load"] else "종료"
     send_slack_message(f"🔥 [게임] CPU 부하 모드 {state_text}")
     return jsonify({"cpu_load": chaos_state["cpu_load"]})
@@ -1710,7 +1778,8 @@ def chaos_cpu():
 
 @app.route("/chaos/error", methods=["POST"])
 def chaos_error():
-    chaos_state["error_mode"] = not chaos_state["error_mode"]
+    current = _read_chaos_flag(CHAOS_KEY_ERROR_MODE, chaos_state["error_mode"])
+    set_error_mode(not current)
     state_text = "시작" if chaos_state["error_mode"] else "종료"
     send_slack_message(f"💥 [게임] 에러 주입 모드 {state_text}")
     return jsonify({"error_mode": chaos_state["error_mode"]})
@@ -1718,9 +1787,11 @@ def chaos_error():
 
 @app.route("/chaos/recover", methods=["POST"])
 def chaos_recover():
-    # CPU 부하 스레드는 chaos_state["cpu_load"]가 False가 되는 순간 반복문(while)을 빠져나오며 스스로 멈춘다.
+    # 이 요청을 받은 파드가 아니라 실제로 부하를 태우고 있는 다른 파드라면, Redis에 쓴 False
+    # 값을 _sync_chaos_state_loop가 최대 1초 안에 읽어와 그 파드의 로컬 상태를 바꿔주면서
+    # _cpu_burn의 while문이 스스로 멈춘다.
     set_cpu_load(False)
-    chaos_state["error_mode"] = False
+    set_error_mode(False)
     send_slack_message("✅ [게임] 모든 Chaos 모드 정상 복귀")
     return jsonify({"cpu_load": False, "error_mode": False})
 

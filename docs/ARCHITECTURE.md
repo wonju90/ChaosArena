@@ -42,25 +42,22 @@ flowchart TB
         ArgoCD2 --> ManifestsRepo
     end
 
-    Pods1 -.->|"/health 직접 확인 (인프라 지도)"| Pods2
+    Pods1 -.->|"/health 직접 확인 (월드맵)"| Pods2
     SourceRepo["GitHub: ChaosArena (소스)"] -->|"push → webhook (양쪽 각자)"| Jenkins1
     SourceRepo -->|"push → webhook (양쪽 각자)"| Jenkins2
     Alertmgr1 -->|"[KR1] 알림"| Slack["💬 Slack"]
     Alertmgr2 -->|"[KR2] 알림"| Slack
 ```
 
-**KR1에도 Jenkins/ArgoCD/Prometheus가 있는 이유**: 처음엔 HPA·Redis 같은 "서비스 경로" 컴포넌트만
-두 리전에 대칭으로 두고, Jenkins/ArgoCD/Prometheus 같은 "컨트롤 플레인"은 KR2 하나로 관리하려고
-했었다. 그런데 "그 컨트롤 플레인이 있는 리전 자체가 오래 죽으면, 반대쪽 리전은 서비스가 멀쩡해도
-새 코드를 배포할 방법이 없어진다"는 SPOF를 뒤늦게 발견해서, Jenkins/ArgoCD/모니터링 스택을
-KR1에도 통째로 복제했다 — 상태 없는 오케스트레이터라 복제해도 데이터가 갈라질 위험이 없기
-때문에 가능했던 선택이다. 자세한 판단 기준 갱신 과정은
+**KR1에도 Jenkins/ArgoCD/Prometheus가 있는 이유**: DR(재해복구)을 완전한 형태로 만들기 위해서다 —
+컨트롤 플레인(배포·모니터링 도구)이 한쪽 리전에만 있으면, 그 리전이 오래 죽었을 때 반대쪽 서비스는
+멀쩡해도 새 코드를 배포할 방법이 없는 단일장애점(SPOF)이 남기 때문에, 상태 없는 오케스트레이터라는
+점을 활용해 KR1에도 통째로 복제했다. 자세한 판단 기준 갱신 과정은
 [`CONCEPTS.md` 21.6~21.7절](./CONCEPTS.md#216-그런데-다시-짚어보니--본점-시스템에도-spof가-있었다)
 참고.
 
-이 다이어그램은 클로드가 이전에 만들어준 인터랙티브 아키텍처 아티팩트와 같은 내용을 텍스트로
-정리한 것이다. 아래부터는 이 그림 위에서 "실제로 무슨 일이 벌어질 때" 어떤 화살표를 타고 가는지
-5가지 시나리오로 나눠서 따라가 본다.
+위 다이어그램 위에서 "실제로 무슨 일이 벌어질 때" 어떤 화살표를 타고 가는지, 아래에서 5가지
+시나리오로 나눠 설명한다.
 
 ---
 
@@ -100,15 +97,14 @@ KR1에도 통째로 복제했다 — 상태 없는 오케스트레이터라 복�
 3. 여기서부터는 앱이 하는 일이 없다 — **쿠버네티스 자체의 Self-Healing**이 동작한다. `chaos-demo`
    Deployment는 "항상 3개가 떠있어야 한다"고 선언돼 있어서(`k8s/deployment.yaml`의 `replicas: 3`),
    컨트롤러가 파드 하나가 사라진 걸 감지하는 즉시 새 파드를 자동으로 만든다. **이게 이 프로젝트의
-   핵심 데모다 — 사람이 아무것도 안 눌러도 클러스터가 스스로 복구한다.**
+   핵심 시나리오다 — 사람이 아무것도 안 눌러도 클러스터가 스스로 복구한다.**
 4. 화면(JS)은 1초 간격으로 `/api/mission/status`를 계속 물어본다. 서버는 그때마다 실제 파드 목록을
    조회해서 "기대하는 개수(3개)만큼 Ready 상태인지"를 확인한다.
 5. 전부 Ready가 되면 서버가 복구 완료로 판정하고 `_complete_mission()`을 실행 — 걸린 시간을 재서
    랭크(S/A/B/C)를 매기고, 그 결과를 **Redis**에 기록한다(`records:incidents`, `records:leaderboard`
    등, [app.py:182](../app.py#L182) 이하).
-6. **왜 Redis인가**: 파드가 3개나 있고 방금 그중 하나가 재시작됐으니, 그 기록을 아무 파드의 메모리에
-   두면 안 된다 — 파드 3개가 전부 같은 Redis를 보게 해서 "누가 응답하든 같은 기록"이 되게 한 것이다
-   (이 부분을 왜 나중에 따로 추가하게 됐는지는 아래 "이 문서가 만들어진 계기" 참고).
+6. 그 기록은 파드 메모리가 아니라 **Redis**에 남긴다 — 파드 3개가 전부 같은 Redis를 보게 해서
+   "누가 응답하든 같은 기록"이 되도록 한 것이다. 왜 필요했는지는 `CONCEPTS.md` 20절 참고.
 
 **더 알아보기**: `CONCEPTS.md` 1·5절(Self-Healing 기본 개념), 20절(Redis) · `PROJECT_LOG.md` 4.31절
 
@@ -124,7 +120,7 @@ git push → GitHub 웹훅 → Jenkins(CI) → NCR(이미지 저장) → GitHub(
 이게 가장 단계가 많은 흐름이다. **KR1/KR2 양쪽 Jenkins가 완전히 독립적으로, 이 5단계를 동시에
 각자 밟는다** — 같은 `Jenkinsfile`을 공유하되, 각 컨트롤러에 심어둔 `env.REGION`(kr1/kr2) 값
 하나로 이미지 태그 접두어와 매니페스트 레포 경로(`argocd-managed-kr1`/`-kr2`)만 갈라진다. 아래는
-그중 한 리전 기준으로 따라가 본 것이다:
+그중 한 리전 기준으로 정리한 것이다:
 
 1. **Checkout** — GitHub의 `ChaosArena` 레포(`infra/k8s-setup` 브랜치)에 push가 생기면, GitHub가
    양쪽 리전에 각각 등록된 웹훅으로 두 Jenkins 모두에게 "방금 push 있었다"고 동시에 알린다.
@@ -134,10 +130,10 @@ git push → GitHub 웹훅 → Jenkins(CI) → NCR(이미지 저장) → GitHub(
    containerd라 `docker.sock`이 없어서다.
 3. **Sign** — **cosign**으로 그 이미지에 서명한다. NCR의 "서명 안 된 이미지는 pull 금지" 정책 때문에,
    서명이 없으면 이 이미지는 애초에 클러스터에 배포될 수 없다(공급망 보안).
-4. **Update Manifests Repo** — 여기가 이 프로젝트에서 제일 중요한 설계 지점이다. Jenkins는
-   **`kubectl`로 클러스터를 직접 안 건드린다.** 대신 별도 레포 `ChaosArena-manifests`를 클론해서, 그
-   안의 `deployment.yaml` 이미지 태그만 `yq`로 고치고 커밋+push한다. **Jenkins는 이제 클러스터
-   배포 권한이 아예 없다** — Git에 쓰기 권한만 있으면 된다(GitOps).
+4. **Update Manifests Repo** — Jenkins는 `kubectl`로 클러스터를 직접 건드리지 않는다. 대신 별도
+   레포 `ChaosArena-manifests`를 클론해서, 그 안의 `deployment.yaml` 이미지 태그만 `yq`로 고치고
+   커밋+push한다 — Jenkins에게는 Git 쓰기 권한만 있고 클러스터 배포 권한은 없다(GitOps). 왜 이
+   구조를 택했는지는 `CONCEPTS.md` 16절 참고.
 5. 클러스터 안에 떠있는 **ArgoCD**가 그 `ChaosArena-manifests` 레포를 지켜보다가, 방금 생긴 커밋을
    발견하면 **스스로** 클러스터를 그 내용에 맞춘다(Pull 모델) — 실제로 새 이미지를 가진 파드가
    여기서 뜬다.
@@ -194,13 +190,13 @@ GSLB 헬스체크 실패 감지 → 자동으로 Standby(KR2)의 IP로 응답 �
 에서 일어나는 자가치유다. "파드 레벨 자가치유"(시나리오 2)와 "리전 레벨 자가치유"(이 시나리오)가
 이 프로젝트의 핵심 메시지인 "여러 레벨에서 스스로 복구하는 시스템"을 완성한다.
 
-**이제는 이 과정을 화면에서도 볼 수 있다** — `/infra`(인프라 지도) 탭이 앱 백엔드에서 양쪽
+**이제는 이 과정을 화면에서도 볼 수 있다** — `/infra`(월드맵) 탭이 앱 백엔드에서 양쪽
 리전에 직접 `/health`를 확인해서 카드 색으로 보여주고, 공개 도메인(`www.chaosarena.cloud`)의
 `/api/status`를 따로 호출해 "GSLB가 지금 실제로 어디로 트래픽을 보내는지"도 별도 배지로 표시한다.
 리전 카드는 수 초 안에 빨갛게 바뀌지만 GSLB 배지는 TTL 때문에 30~80초 뒤에야 따라오는 그
 시차 자체가, 위 4번 항목에서 측정한 지연을 화면으로 보여준다.
 
-**더 알아보기**: `CONCEPTS.md` 8절, 22절(인프라 지도) · `PROJECT_LOG.md` 4.15, 4.24절
+**더 알아보기**: `CONCEPTS.md` 8절, 22절(월드맵) · `PROJECT_LOG.md` 4.15, 4.24절
 
 ---
 
@@ -218,25 +214,11 @@ GSLB 헬스체크 실패 감지 → 자동으로 Standby(KR2)의 IP로 응답 �
 | ArgoCD | CD(GitOps 반영) | `k8s/argocd-application(-kr1).yaml` — **KR1/KR2 양쪽 동일, 각자 자기 폴더만 감시**(21.6절) |
 | NCR | 비공개 이미지 저장소 | Terraform 밖, 콘솔에서 생성 |
 | ChaosArena-manifests(별도 레포) | GitOps가 지켜보는 실제 배포 대상 | 별도 GitHub 레포, `argocd-managed-kr1/`·`-kr2/` 형제 폴더 |
-| 인프라 지도(`/infra`) | 양쪽 리전 상태 + GSLB 현재 대상을 화면으로 관찰 | `app.py`(`REGIONS_JSON`, `/api/regions`), `templates/infra.html` — 22절 |
+| 월드맵(`/infra`) | 양쪽 리전 상태 + GSLB 현재 대상을 화면으로 관찰 | `app.py`(`REGIONS_JSON`, `/api/regions`), `templates/infra.html` — 22절 |
 
 ---
 
-## 이 문서가 만들어진 계기 (참고)
+## 문서 갱신 이력
 
-이 문서는 리더보드가 배포할 때마다 초기화되는 버그를 실제로 화면에서 목격하고, 그 원인(파드 메모리
-상태)을 설명하는 대화 중에 "전체 흐름을 한눈에 보고 싶다"는 요청으로 만들어졌다. 그 버그 자체와
-Redis 도입 과정은 `PROJECT_LOG.md` 4.31절, `CONCEPTS.md` 20절에 자세히 남아있다.
-
-**업데이트(KR1 재구축)**: KR1(판교)의 RAM 쿼터가 풀려 정식 스펙으로 재구축하고, 원래 설계대로
-GSLB Active를 KR1로 되돌리면서 이 문서의 다이어그램·시나리오 5·컴포넌트 표를 갱신했다. KR1에도
-Redis/HPA를 새로 붙였지만 Jenkins/ArgoCD/Prometheus는 의도적으로 KR2에만 남겨뒀다 — 그 판단 기준은
-`CONCEPTS.md` 21절(서비스 경로 vs 컨트롤 플레인), 재구축 과정 자체는 `PROJECT_LOG.md` 4.33절 참고.
-
-**업데이트(컨트롤 플레인 이중화 + 인프라 지도)**: 바로 위 문단의 "Jenkins/ArgoCD/Prometheus는
-KR2에만"이라는 판단이 뒤집혔다 — 그 컨트롤 플레인이 있는 리전 자체가 오래 죽으면 반대쪽 리전도
-새 코드를 배포할 방법이 없어진다는 SPOF를 발견해서, KR1에도 통째로 복제했다(`CONCEPTS.md`
-21.6~21.7절, `PROJECT_LOG.md` 4.34절). 이어서 이 failover를 화면에서 직접 관찰할 수 있는
-`/infra`(인프라 지도) 탭을 추가했다(`CONCEPTS.md` 22절) — 앱이 처음으로 반대편 리전의 존재를
-아는 지점이라, 이 문서의 다이어그램에도 그 신규 연결(양쪽 Jenkins/ArgoCD, `/health` 상호 확인)을
-반영했다.
+이 문서는 KR1 재구축과 컨트롤 플레인 이중화(DR 완성) 이후 갱신되었다 — 자세한 과정은
+`PROJECT_LOG.md` 4.33~4.34절 참고.
